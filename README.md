@@ -179,6 +179,69 @@ docker compose up --build billing-core-api billing-core-worker
 
 API e worker rodam como serviços separados, o que aproxima melhor o ambiente local de um deploy real em produção.
 
+## Deploy No Railway
+
+Para publicar este projeto no Railway, trate a API e o worker como dois serviços distintos.
+
+### Estrutura recomendada
+
+- 1 serviço `billing-core-api`
+- 1 serviço `billing-core-worker`
+- 1 banco PostgreSQL
+- 1 instância Redis
+
+### Dockerfiles
+
+O repositório já inclui arquivos separados para cada serviço:
+
+- `Dockerfile.api`
+- `Dockerfile.worker`
+
+No Railway, configure:
+
+- na API: `RAILWAY_DOCKERFILE_PATH=Dockerfile.api`
+- no worker: `RAILWAY_DOCKERFILE_PATH=Dockerfile.worker`
+
+### Variáveis de ambiente para Railway
+
+O repositório também inclui templates prontos para importação no Railway:
+
+- `.env.railway.api.example`
+- `.env.railway.worker.example`
+
+Use esses arquivos como base no painel de Variables de cada serviço.
+
+### Valores importantes em produção
+
+- `APP_ENV=production`
+- `ASAAS_SANDBOX=false`
+- `ENABLE_API_DOCS=false`
+- `TRUST_PROXY_HEADERS=true`
+- `RUN_MIGRATIONS_ON_START=true` apenas na API
+- deixe o `PORT` livre para o Railway injetar automaticamente na API
+
+Além disso, configure corretamente:
+
+- `DATABASE_URL`
+- `REDIS_URL`
+- `INTERNAL_WEBHOOK_SIGNATURE`
+- `ASAAS_API_TOKEN`
+- `ASAAS_WEBHOOK_SECRET`
+- `INTERNAL_API_CLIENTS`
+- `ALLOWED_INTERNAL_WEBHOOK_HOSTS`
+
+Se seus serviços Railway se chamarem `Postgres` e `Redis`, você pode configurar reference variables assim:
+
+- `DATABASE_URL=${{Postgres.DATABASE_URL}}`
+- `REDIS_URL=${{Redis.REDIS_URL}}`
+
+### Observações de deploy
+
+- a API precisa de domínio público; o worker não
+- a API pode expor `PORT`, mas o worker não precisa de porta pública
+- se você subir apenas a API sem o worker, os fluxos assíncronos não vão fechar o ciclo
+- em produção, a aplicação valida `INTERNAL_API_CLIENTS` e `ALLOWED_INTERNAL_WEBHOOK_HOSTS`
+
 ## Testes E Validações
 
 Rodar a suíte automatizada:
