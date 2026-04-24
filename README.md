@@ -1,5 +1,7 @@
 # Billing Core
 
+> Este projeto faz parte do ecossistema da Neectify e foi desenvolvido como uma das bases da iniciativa.
+
 Billing Core é um backend orientado à produção para cobrança recorrente em produtos SaaS. Ele centraliza criação de assinaturas, integração com gateway, recepção de webhooks, processamento assíncrono, rastreabilidade por job e proteções operacionais como idempotência, rate limit, logs estruturados, readiness checks e runbooks de deploy.
 
 Este projeto foi construído como um backend open source pessoal para demonstrar como projetar um serviço financeiro crítico com decisões pragmáticas de arquitetura, preocupação real com operação e um caminho claro entre desenvolvimento local e deploy.
