@@ -1,0 +1,31 @@
+services:
+  billing-core-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: billing-core-api
+    env_file:
+      - .env
+    environment:
+      RUN_MIGRATIONS_ON_START: "true"
+      SERVICE_MODE: "api"
+    ports:
+      - "${PORT:-8000}:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "scripts/post_deploy_smoke.py", "--base-url", "http://127.0.0.1:8000", "--skip-authenticated"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 20s
+
+  billing-core-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: billing-core-worker
+    env_file:
+      - .env
+    environment:
+      SERVICE_MODE: "worker"
+    restart: unless-stopped

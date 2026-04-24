@@ -1,0 +1,111 @@
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from uuid import UUID
+
+from app.domain.errors import DomainError
+from app.domain.enums.gateway_provider import GatewayProvider
+from app.domain.enums.subscription_status import SubscriptionStatus
+from app.domain.enums.subscription_type import SubscriptionType
+from app.domain.enums.system import System
+
+
+class DayMapper():
+    def __init__(self, subscription_type: SubscriptionType):
+        self.subscription_type = subscription_type
+
+    def get_days(self) -> int:
+        if self.subscription_type == SubscriptionType.MONTHLY:
+            return 30
+        if self.subscription_type == SubscriptionType.SEMIANNUAL:
+            return 180
+        return 365
+
+
+class Subscription():
+    def __init__(
+        self,
+        initial_date: datetime,
+        description: str,
+        system_subscription_id: str,
+        gateway_subscription_id: str,
+        gateway_provider: GatewayProvider,
+        status: SubscriptionStatus,
+        last_paid_date: datetime | None,
+        from_system: System,
+        subscription_type: SubscriptionType,
+        expires_at: datetime,
+        trial_days: int = 0,
+        value: Decimal = Decimal(0),
+        trial_ends_at: datetime | None = None,
+        next_due_date: datetime | None = None,
+        cancelled_at: datetime | None = None,
+        id: UUID = None,
+        webhook_link: str | None = None,
+    ):
+        normalized_description = (description or "").strip()
+        normalized_system_subscription_id = (system_subscription_id or "").strip()
+        normalized_gateway_subscription_id = (gateway_subscription_id or "").strip()
+
+        if not normalized_description:
+            raise DomainError("Assinatura precisa ter descrição.")
+
+        if not normalized_system_subscription_id:
+            raise DomainError("Assinatura precisa ter identificador do sistema.")
+
+        if not normalized_gateway_subscription_id:
+            raise DomainError("Assinatura precisa ter identificador do gateway.")
+
+        if value < 0:
+            raise DomainError("Assinatura não pode ter valor negativo.")
+
+        if trial_days < 0:
+            raise DomainError("Assinatura não pode ter trial negativo.")
+
+        self.initial_date = initial_date
+        self.description = normalized_description
+        self.system_subscription_id = normalized_system_subscription_id
+        self.gateway_subscription_id = normalized_gateway_subscription_id
+        self.gateway_provider = gateway_provider
+        self.status = status
+        self.last_paid_date = last_paid_date
+        self.from_system = from_system
+        self.subscription_type = subscription_type
+        self.expires_at = expires_at
+        self.trial_days = trial_days
+        self.id = id
+        self.trial_ends_at = trial_ends_at
+        self.next_due_date = next_due_date
+        self.cancelled_at = cancelled_at
+        self.webhook_link = webhook_link
+        self.value = value
+
+    def mark_as_paid(self, payment_date: datetime):
+        if payment_date is None:
+            raise DomainError("Assinatura não pode ser ativada sem data de pagamento.")
+
+        if self.status == SubscriptionStatus.CANCELED:
+            raise DomainError("Assinatura cancelada não pode ser reativada por esse fluxo.")
+
+        self.last_paid_date = payment_date
+        mapper = DayMapper(self.subscription_type)
+        base = max(payment_date, self.expires_at)
+        self.expires_at = base + timedelta(days=mapper.get_days())
+        self.status = SubscriptionStatus.ACTIVE
+
+    def is_in_trial(self) -> bool:
+        if not self.trial_ends_at:
+            return False
+        return datetime.now(timezone.utc) < self.trial_ends_at
+
+    def is_active(self) -> bool:
+        return self.status == SubscriptionStatus.ACTIVE and self.expires_at > datetime.now(timezone.utc)
+
+    def belongs_to_system(self, system: System) -> bool:
+        return self.from_system == system
+
+    def cancel(self):
+        if self.status == SubscriptionStatus.CANCELED:
+            return
+
+        self.status = SubscriptionStatus.CANCELED
+        self.cancelled_at = datetime.now(timezone.utc)
