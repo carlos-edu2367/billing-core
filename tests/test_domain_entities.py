@@ -65,6 +65,73 @@ def test_payment_mark_as_paid_is_idempotent_for_paid_payment():
     assert payment.net_value == Decimal("94.00")
 
 
+def test_subscription_monthly_mark_as_paid_advances_by_one_calendar_month():
+    base = datetime(2026, 1, 31, tzinfo=timezone.utc)
+    subscription = Subscription(
+        initial_date=base,
+        description="Plano Pro",
+        system_subscription_id="sub-1",
+        gateway_subscription_id="gw-sub-1",
+        gateway_provider=GatewayProvider.ASAAS,
+        status=SubscriptionStatus.PENDING,
+        last_paid_date=None,
+        from_system=System.NEECTIFY_SHOP,
+        subscription_type=SubscriptionType.MONTHLY,
+        expires_at=base,
+        value=Decimal("99.90"),
+    )
+
+    subscription.mark_as_paid(base)
+
+    # Jan 31 + 1 mês = Feb 28 (não Feb 31, que não existe)
+    assert subscription.expires_at.month == 2
+    assert subscription.expires_at.day == 28
+    assert subscription.expires_at.year == 2026
+
+
+def test_subscription_monthly_mark_as_paid_regular_day():
+    base = datetime(2026, 3, 15, tzinfo=timezone.utc)
+    subscription = Subscription(
+        initial_date=base,
+        description="Plano Pro",
+        system_subscription_id="sub-1",
+        gateway_subscription_id="gw-sub-1",
+        gateway_provider=GatewayProvider.ASAAS,
+        status=SubscriptionStatus.PENDING,
+        last_paid_date=None,
+        from_system=System.NEECTIFY_SHOP,
+        subscription_type=SubscriptionType.MONTHLY,
+        expires_at=base,
+        value=Decimal("99.90"),
+    )
+
+    subscription.mark_as_paid(base)
+
+    assert subscription.expires_at == datetime(2026, 4, 15, tzinfo=timezone.utc)
+
+
+def test_subscription_yearly_mark_as_paid_advances_by_one_calendar_year():
+    base = datetime(2024, 2, 29, tzinfo=timezone.utc)  # ano bissexto
+    subscription = Subscription(
+        initial_date=base,
+        description="Plano Anual",
+        system_subscription_id="sub-1",
+        gateway_subscription_id="gw-sub-1",
+        gateway_provider=GatewayProvider.ASAAS,
+        status=SubscriptionStatus.PENDING,
+        last_paid_date=None,
+        from_system=System.NEECTIFY_SHOP,
+        subscription_type=SubscriptionType.YEARLY,
+        expires_at=base,
+        value=Decimal("999.90"),
+    )
+
+    subscription.mark_as_paid(base)
+
+    # Feb 29 2024 + 1 ano = Feb 28 2025 (2025 não é bissexto)
+    assert subscription.expires_at == datetime(2025, 2, 28, tzinfo=timezone.utc)
+
+
 def test_customer_bind_provider_customer_sets_binding():
     customer = Customer(
         nome="Carlos",

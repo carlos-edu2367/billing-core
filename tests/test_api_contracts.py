@@ -1,19 +1,22 @@
 import json
+from datetime import date, timedelta
 
 from app.domain.enums.system import System
 from app.infra.config import settings
 
 
 def subscription_payload():
+    next_due = (date.today() + timedelta(days=30)).isoformat()
+    expires_at = (date.today() + timedelta(days=395)).isoformat() + "T00:00:00Z"
     return {
         "customer_provider_id": "cus_123",
         "value": "129.90",
         "subscription_type": "MONTHLY",
-        "next_due_date": "2026-05-01",
+        "next_due_date": next_due,
         "description": "Plano Pro anualizado",
         "system": "neectify_shop",
         "system_sub_id": "sub_shop_001",
-        "expires_at": "2027-05-01T00:00:00Z",
+        "expires_at": expires_at,
         "webhook_link": "https://hooks.neectify.local/billing/subscription",
     }
 
@@ -102,6 +105,20 @@ def test_create_subscription_rejects_past_due_date(client):
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_webhook_accepts_unknown_asaas_event_type(client):
+    """Eventos desconhecidos do Asaas (ex: split) devem retornar 202, não 400."""
+    payload = {
+        "event": "SUBSCRIPTION_SPLIT_DIVERGENCE_BLOCK",
+        "id": "evt-split-001",
+        "subscription": {"id": "sub-xxx"},
+    }
+    headers = {"asaas-access-token": "fake-asaas-webhook-secret", "content-type": "application/json"}
+
+    response = client.post("/v1/webhooks/asaas", content=json.dumps(payload), headers=headers)
+
+    assert response.status_code == 202
 
 
 def test_readiness_returns_dependency_details(client):

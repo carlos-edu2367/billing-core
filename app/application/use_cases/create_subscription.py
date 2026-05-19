@@ -111,7 +111,7 @@ class CreateSubscription:
             subscription = await self.repo.save(subscription)
 
             payments = await gateway.get_subscription_payment(gateway_subscription_id)
-            payment_info = next((item for item in payments if str(item.status).lower() == PaymentStatus.PENDING.value), None)
+            payment_info = next((item for item in payments if item.status.upper() == "PENDING"), None)
             if payment_info is None and payments:
                 payment_info = payments[0]
             if payment_info is None:

@@ -12,6 +12,7 @@ from app.application.interfaces.gateway_provider import (
 )
 from app.domain.enums.payment_type import PaymentType
 from app.domain.enums.subscription_type import SubscriptionType
+from app.domain.errors import DomainError
 from app.infra.config import settings
 
 
@@ -78,9 +79,12 @@ class AsaasProvider(InterfaceGateway):
         cycle: SubscriptionType,
         description: str,
     ) -> str:
+        if billing_type == PaymentType.DEBIT_CARD:
+            raise DomainError("DEBIT_CARD não é suportado pelo Asaas para assinaturas recorrentes.")
+
         payload = {
             "customer": customer_provider_id,
-            "billingType": billing_type.value if billing_type != PaymentType.DEBIT_CARD else PaymentType.UNDEFINED.value,
+            "billingType": billing_type.value,
             "value": float(value),
             "nextDueDate": next_due_date.isoformat(),
             "cycle": cycle.value,
@@ -125,24 +129,29 @@ class AsaasProvider(InterfaceGateway):
         existing = [item for item in result.get("data", []) if not item.get("deleted")]
 
         if existing:
-            customer_id = existing[0]["id"]
-        else:
-            response = await self.asaas.post(
-                "/customers",
-                {
-                    "name": name,
-                    "cpfCnpj": cpfCnpj,
-                    "email": email,
-                    "externalReference": external_reference,
-                },
+            found = existing[0]
+            return GetCustomerResponse(
+                cus_id=found["id"],
+                name=found.get("name", name),
+                email=found.get("email", email),
+                external_reference=found.get("externalReference", external_reference),
+                deleted=False,
             )
-            customer_id = response["id"]
 
+        response = await self.asaas.post(
+            "/customers",
+            {
+                "name": name,
+                "cpfCnpj": cpfCnpj,
+                "email": email,
+                "externalReference": external_reference,
+            },
+        )
         return GetCustomerResponse(
-            cus_id=customer_id,
-            name=name,
-            email=email,
-            external_reference=external_reference,
+            cus_id=response["id"],
+            name=response.get("name", name),
+            email=response.get("email", email),
+            external_reference=response.get("externalReference", external_reference),
             deleted=False,
         )
 

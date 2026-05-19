@@ -1,4 +1,5 @@
-from datetime import datetime, timedelta, timezone
+import calendar
+from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID
 
@@ -9,16 +10,23 @@ from app.domain.enums.subscription_type import SubscriptionType
 from app.domain.enums.system import System
 
 
-class DayMapper():
-    def __init__(self, subscription_type: SubscriptionType):
-        self.subscription_type = subscription_type
+def _add_billing_period(base: datetime, subscription_type: SubscriptionType) -> datetime:
+    """Adds the billing period to base using calendar-accurate arithmetic.
 
-    def get_days(self) -> int:
-        if self.subscription_type == SubscriptionType.MONTHLY:
-            return 30
-        if self.subscription_type == SubscriptionType.SEMIANNUAL:
-            return 180
-        return 365
+    Clamps day to the last valid day of the target month (e.g. Jan 31 + 1 month = Feb 28/29).
+    """
+    if subscription_type == SubscriptionType.YEARLY:
+        months_to_add = 12
+    elif subscription_type == SubscriptionType.SEMIANNUAL:
+        months_to_add = 6
+    else:
+        months_to_add = 1
+
+    total_months = base.month - 1 + months_to_add
+    target_year = base.year + total_months // 12
+    target_month = total_months % 12 + 1
+    target_day = min(base.day, calendar.monthrange(target_year, target_month)[1])
+    return base.replace(year=target_year, month=target_month, day=target_day)
 
 
 class Subscription():
@@ -87,9 +95,8 @@ class Subscription():
             raise DomainError("Assinatura cancelada não pode ser reativada por esse fluxo.")
 
         self.last_paid_date = payment_date
-        mapper = DayMapper(self.subscription_type)
         base = max(payment_date, self.expires_at)
-        self.expires_at = base + timedelta(days=mapper.get_days())
+        self.expires_at = _add_billing_period(base, self.subscription_type)
         self.status = SubscriptionStatus.ACTIVE
 
     def is_in_trial(self) -> bool:

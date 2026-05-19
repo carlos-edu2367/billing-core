@@ -7,13 +7,14 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from app.domain.enums.gateway_provider import GatewayProvider
 
 
-class EventType(Enum):
+class EventType(str, Enum):
     PAYMENT_RECEIVED = "PAYMENT_RECEIVED"
     PAYMENT_OVERDUE = "PAYMENT_OVERDUE"
     PAYMENT_REFUNDED = "PAYMENT_REFUNDED"
     PAYMENT_CHARGEBACK_REQUESTED = "PAYMENT_CHARGEBACK_REQUESTED"
     SUBSCRIPTION_INACTIVATED = "SUBSCRIPTION_INACTIVATED"
     SUBSCRIPTION_DELETED = "SUBSCRIPTION_DELETED"
+    UNKNOWN = "__UNKNOWN__"
 
 
 class Details(BaseModel):
@@ -46,6 +47,16 @@ class WebhookPayload(BaseModel):
     event: EventType
     source_event_id: str | None = None
     details: Details
+
+    @field_validator("event", mode="before")
+    @classmethod
+    def coerce_unknown_event(cls, v):
+        if isinstance(v, str):
+            try:
+                return EventType(v)
+            except ValueError:
+                return EventType.UNKNOWN
+        return v
 
     def event_id_for(self, gateway_provider: GatewayProvider) -> str:
         event_source_id = self.source_event_id or self.details.id
