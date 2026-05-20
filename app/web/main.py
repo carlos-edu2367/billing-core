@@ -12,6 +12,7 @@ from app.infra.config import settings
 from app.infra.observability import configure_logging, correlation_id_var, metrics
 
 from app.web.errors import register_exception_handlers, register_request_too_large
+from app.web.routes.customers import router as customers_router
 from app.web.routes.health import router as health_router
 from app.web.routes.jobs import router as jobs_router
 from app.web.routes.subscriptions import router as subscriptions_router
@@ -44,6 +45,7 @@ app = FastAPI(
     openapi_url="/openapi.json" if settings.ENABLE_API_DOCS else None,
     openapi_tags=[
         {"name": "health", "description": "Endpoints operacionais da API."},
+        {"name": "customers", "description": "Cadastro de clientes no provedor de pagamento."},
         {"name": "subscriptions", "description": "Criacao e processamento de assinaturas."},
         {"name": "jobs", "description": "Consulta de processamento assincrono."},
         {"name": "webhooks", "description": "Recepcao de eventos de gateways externos."},
@@ -123,6 +125,7 @@ async def request_context_middleware(request: Request, call_next):
 register_exception_handlers(app)
 
 app.include_router(health_router)
+app.include_router(customers_router)
 app.include_router(webhooks_router)
 app.include_router(subscriptions_router)
 app.include_router(jobs_router)

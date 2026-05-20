@@ -80,7 +80,7 @@ def fake_internal_clients():
     settings.INTERNAL_API_CLIENTS = {
         "neectify_shop": InternalApiClientConfig(
             api_key="fake-neectify-shop-key",
-            scopes=["subscriptions:create", "jobs:read", "metrics:read"],
+            scopes=["customers:create", "subscriptions:create", "jobs:read", "metrics:read"],
         )
     }
     settings.ASAAS_WEBHOOK_SECRET = "fake-asaas-webhook-secret"
