@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m alembic heads)",
+      "Bash(python -c \"from alembic.config import Config; from alembic.script import ScriptDirectory; cfg = Config\\('alembic.ini'\\); sd = ScriptDirectory.from_config\\(cfg\\); print\\([r.revision for r in sd.walk_revisions\\(\\)]\\)\")",
+      "Bash(python -c \"import os; os.chdir\\(r'c:\\\\Users\\\\reali\\\\Documents\\\\Neectify\\\\billing'\\); from alembic.config import Config; cfg = Config\\('alembic.ini'\\); print\\('ok'\\)\")"
+    ]
+  }
+}

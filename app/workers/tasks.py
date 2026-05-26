@@ -105,6 +105,7 @@ async def _build_payment_internal_delivery(payment) -> InternalWebhookDelivery |
 async def process_webhook(ctx, payload_dict: dict, gateway_provider_str: str):
     job_id = ctx["job_id"]
     job_try = ctx["job_try"]
+    release_lock = False
 
     try:
         await update_job_metadata(
@@ -120,21 +121,30 @@ async def process_webhook(ctx, payload_dict: dict, gateway_provider_str: str):
         payload = WebhookPayload.model_validate(payload_dict)
         event_id = payload.event_id_for(gateway_provider)
         lock_key = f"billing_core:webhook_lock:{event_id}"
+
+        # Store job_id as lock value so retries of this same job can re-acquire.
         lock_acquired = await ctx["redis"].set(
             lock_key,
-            "1",
+            job_id,
             ex=settings.WEBHOOK_PROCESSING_LOCK_TTL_SECONDS,
             nx=True,
         )
 
         if not lock_acquired:
-            await update_job_metadata(
-                ctx["redis"],
-                job_id,
-                status="completed",
-                finished_at=datetime.now(timezone.utc),
-            )
-            return {"status": "duplicate", "result": None}
+            current_holder = await ctx["redis"].get(lock_key)
+            if isinstance(current_holder, bytes):
+                current_holder = current_holder.decode()
+            if current_holder == job_id:
+                # This is a retry of the same job re-acquiring its own lock.
+                lock_acquired = True
+            else:
+                await update_job_metadata(
+                    ctx["redis"],
+                    job_id,
+                    status="completed",
+                    finished_at=datetime.now(timezone.utc),
+                )
+                return {"status": "duplicate", "result": None}
 
         internal_delivery_id: UUID | None = None
         async with AsyncSessionLocal() as session:
@@ -171,6 +181,7 @@ async def process_webhook(ctx, payload_dict: dict, gateway_provider_str: str):
                 str(internal_delivery_id),
             )
 
+        release_lock = True
         await update_job_metadata(
             ctx["redis"],
             job_id,
@@ -180,6 +191,8 @@ async def process_webhook(ctx, payload_dict: dict, gateway_provider_str: str):
         ctx["logger"].info("Webhook processed", extra={"job_id": job_id, "job_try": job_try})
         return {"status": "success", "result": _dump_result(result), "internal_delivery_id": str(internal_delivery_id) if internal_delivery_id else None}
     except (DomainError, NotFoundError, ValueError) as exc:
+        # Terminal failure — no ARQ retry will follow, so we can release the lock.
+        release_lock = True
         await update_job_metadata(
             ctx["redis"],
             job_id,
@@ -194,6 +207,9 @@ async def process_webhook(ctx, payload_dict: dict, gateway_provider_str: str):
         return {"status": "failed", "error": str(exc)}
     except Exception as e:
         is_final_try = job_try >= settings.WORKER_MAX_TRIES
+        # Release lock only on the final attempt; retries must be able to re-acquire it
+        # (via job_id check) while concurrent workers for the same event are still blocked.
+        release_lock = is_final_try
         await update_job_metadata(
             ctx["redis"],
             job_id,
@@ -208,7 +224,7 @@ async def process_webhook(ctx, payload_dict: dict, gateway_provider_str: str):
         ctx["logger"].error("Webhook processing failed", extra={"job_id": job_id, "job_try": job_try, "error": str(e)})
         raise
     finally:
-        if "event_id" in locals():
+        if release_lock and "event_id" in locals():
             await ctx["redis"].delete(f"billing_core:webhook_lock:{event_id}")
 
 
