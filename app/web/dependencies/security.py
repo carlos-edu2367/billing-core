@@ -16,6 +16,13 @@ class AuthContext:
     scopes: frozenset[str]
 
 
+@dataclass(frozen=True)
+class WebhookValidationResult:
+    raw_body: bytes
+    replay_key: str
+    duplicate: bool = False
+
+
 def _parse_system(raw_system: str) -> System:
     normalized = raw_system.strip()
 
@@ -32,8 +39,24 @@ def _parse_system(raw_system: str) -> System:
 def require_internal_auth(*required_scopes: str) -> Callable:
     async def dependency(
         request: Request,
-        x_system: str = Header(..., alias="X-System"),
-        x_api_key: str = Header(..., alias="X-API-Key"),
+        x_system: str = Header(
+            ...,
+            alias="X-System",
+            description=(
+                "Identifica o sistema interno chamador. "
+                "Use um valor configurado em `INTERNAL_API_CLIENTS`, como `neectify_shop`."
+            ),
+            examples=["neectify_shop"],
+        ),
+        x_api_key: str = Header(
+            ...,
+            alias="X-API-Key",
+            description=(
+                "Chave de autenticação server-to-server do sistema informado em `X-System`. "
+                "A chave precisa ter os scopes necessários para o endpoint."
+            ),
+            examples=["sk_live_internal_xpto123"],
+        ),
     ) -> AuthContext:
         system = _parse_system(x_system)
         client = settings.INTERNAL_API_CLIENTS.get(system.value)
@@ -63,7 +86,15 @@ def require_internal_auth(*required_scopes: str) -> Callable:
 async def validate_asaas_webhook(
     request: Request,
     redis=Depends(get_redis_pool),
-    asaas_access_token: str | None = Header(default=None, alias="asaas-access-token"),
+    asaas_access_token: str | None = Header(
+        default=None,
+        alias="asaas-access-token",
+        description=(
+            "Secret compartilhado com o Asaas para autenticar o webhook. "
+            "Deve corresponder a `ASAAS_WEBHOOK_SECRET`."
+        ),
+        examples=["whsec_xpto123"],
+    ),
 ):
     content_type = request.headers.get("content-type", "")
     if content_type and "application/json" not in content_type.lower():
@@ -93,12 +124,9 @@ async def validate_asaas_webhook(
 
     replay_hash = hashlib.sha256(raw_body).hexdigest()
     replay_key = f"billing_core:webhook_replay:{replay_hash}"
-    was_set = await redis.set(replay_key, "1", ex=settings.WEBHOOK_REPLAY_TTL_SECONDS, nx=True)
+    existing_replay = await redis.get(replay_key)
 
-    if not was_set:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Webhook duplicado detectado na janela de replay.",
-        )
+    if existing_replay is not None:
+        return WebhookValidationResult(raw_body=raw_body, replay_key=replay_key, duplicate=True)
 
-    return raw_body
+    return WebhookValidationResult(raw_body=raw_body, replay_key=replay_key)

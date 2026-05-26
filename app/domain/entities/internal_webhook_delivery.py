@@ -12,7 +12,7 @@ class InternalWebhookDelivery:
         event_type: str,
         target_url: str,
         payload: dict,
-        subscription_id: UUID,
+        subscription_id: UUID | None,
         payment_id: UUID | None = None,
         status: InternalWebhookDeliveryStatus = InternalWebhookDeliveryStatus.PENDING,
         attempt_count: int = 0,

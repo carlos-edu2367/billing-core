@@ -1,15 +1,28 @@
 import json
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from uuid import uuid4
 
+from app.domain.entities.payment import Payment
+from app.domain.entities.subscription import Subscription
+from app.domain.enums.gateway_provider import GatewayProvider
+from app.domain.enums.payment_type import PaymentType
+from app.domain.enums.subscription_status import SubscriptionStatus
+from app.domain.enums.subscription_type import SubscriptionType
 from app.domain.enums.system import System
 from app.infra.config import settings
+from app.infra.config import InternalApiClientConfig
+from app.infra.db.setup import get_db
+from app.web.main import app
 
 
 def subscription_payload():
+    next_due_date = (datetime.now(timezone.utc).date() + timedelta(days=30)).isoformat()
     return {
         "customer_provider_id": "cus_123",
         "value": "129.90",
         "subscription_type": "MONTHLY",
-        "next_due_date": "2026-05-01",
+        "next_due_date": next_due_date,
         "description": "Plano Pro anualizado",
         "system": "neectify_shop",
         "system_sub_id": "sub_shop_001",
@@ -18,11 +31,95 @@ def subscription_payload():
     }
 
 
+def payment_payload():
+    return {
+        "customer_provider_id": "cus_123",
+        "value": "79.90",
+        "billing_type": "UNDEFINED",
+        "due_date": "2026-06-10",
+        "description": "Pedido 123",
+        "system": "neectify_shop",
+        "system_payment_id": "order-123",
+        "webhook_link": "https://hooks.neectify.local/billing/payment",
+    }
+
+
 def auth_headers():
     return {
         "X-System": System.NEECTIFY_SHOP.value,
         "X-API-Key": "fake-neectify-shop-key",
     }
+
+
+def make_subscription(system=System.NEECTIFY_SHOP, status=SubscriptionStatus.ACTIVE):
+    return Subscription(
+        initial_date=datetime.now(timezone.utc),
+        description="Plano Pro",
+        system_subscription_id="sub-1",
+        gateway_subscription_id="gw-sub-1",
+        gateway_provider=GatewayProvider.ASAAS,
+        status=status,
+        last_paid_date=None,
+        from_system=system,
+        subscription_type=SubscriptionType.MONTHLY,
+        expires_at=datetime.now(timezone.utc),
+        id=uuid4(),
+        value=Decimal("99.90"),
+    )
+
+
+def make_payment(system=System.NEECTIFY_SHOP):
+    payment = Payment.create_standalone_payment(
+        description="Pedido 123",
+        gateway=GatewayProvider.ASAAS,
+        system_payment_id="order-123",
+        provider_payment_id="pay_123",
+        value=Decimal("79.90"),
+        from_system=system,
+        checkout_link="https://www.asaas.com/i/pay_123",
+        webhook_link="https://hooks.neectify.local/billing/payment",
+        due_date=datetime(2026, 6, 10, tzinfo=timezone.utc).date(),
+        external_reference=f"payment:{system.value}:order-123",
+    )
+    payment.id = uuid4()
+    payment.payment_type = PaymentType.UNDEFINED
+    return payment
+
+
+def override_subscription_lookup(subscription):
+    class FakeSubscriptionRepo:
+        def __init__(self, session):
+            self.session = session
+
+        async def get_by_id(self, subscription_id):
+            if subscription is None or subscription.id != subscription_id:
+                from app.domain.errors import NotFoundError
+
+                raise NotFoundError("Subscription Not Found")
+            return subscription
+
+    async def fake_db():
+        yield object()
+
+    return FakeSubscriptionRepo, fake_db
+
+
+def override_payment_lookup(payment):
+    class FakePaymentRepo:
+        def __init__(self, session):
+            self.session = session
+
+        async def get_by_id(self, payment_id):
+            if payment is None or payment.id != payment_id:
+                from app.domain.errors import NotFoundError
+
+                raise NotFoundError("Payment Not Found")
+            return payment
+
+    async def fake_db():
+        yield object()
+
+    return FakePaymentRepo, fake_db
 
 
 def test_create_subscription_requires_idempotency_key(client):
@@ -48,21 +145,221 @@ def test_create_subscription_is_idempotent_per_key_and_payload(client):
     assert "ja recebida anteriormente" in second.json()["message"]
 
 
-def test_webhook_rejects_duplicate_payload_in_replay_window(client):
-    payload = {"event": "PAYMENT_RECEIVED", "payment": {"id": "pay-1"}}
-    headers = {"asaas-access-token": "fake-asaas-webhook-secret", "content-type": "application/json"}
+def test_create_payment_requires_idempotency_key(client):
+    response = client.post(
+        "/v1/payments",
+        json=payment_payload(),
+        headers=auth_headers(),
+    )
 
-    first = client.post("/v1/webhooks/asaas", content=json.dumps(payload), headers=headers)
-    second = client.post("/v1/webhooks/asaas", content=json.dumps(payload), headers=headers)
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_create_payment_is_idempotent_per_key_and_payload(client):
+    headers = auth_headers() | {"Idempotency-Key": "payment-idem-1"}
+
+    first = client.post("/v1/payments", json=payment_payload(), headers=headers)
+    second = client.post("/v1/payments", json=payment_payload(), headers=headers)
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert first.json()["job_id"] == second.json()["job_id"]
+    assert "ja recebido anteriormente" in second.json()["message"]
+
+
+def test_create_payment_rejects_debit_card(client):
+    headers = auth_headers() | {"Idempotency-Key": "payment-debit"}
+    response = client.post(
+        "/v1/payments",
+        json=payment_payload() | {"billing_type": "DEBIT_CARD"},
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_payment_polling_enforces_ten_second_interval(client, monkeypatch):
+    payment = make_payment()
+    fake_repo, fake_db = override_payment_lookup(payment)
+    monkeypatch.setattr("app.web.routes.payments.PaymentRepositoryINFRA", fake_repo)
+    app.dependency_overrides[get_db] = fake_db
+
+    first = client.get(f"/v1/payments/{payment.id}", headers=auth_headers())
+    second = client.get(f"/v1/payments/{payment.id}", headers=auth_headers())
+
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert second.headers["Retry-After"] == "10"
+    assert second.json()["error"]["code"] == "rate_limit_exceeded"
+
+
+def test_payment_polling_hides_other_system_payment(client, monkeypatch):
+    payment = make_payment(system=System.MARKETFY)
+    fake_repo, fake_db = override_payment_lookup(payment)
+    monkeypatch.setattr("app.web.routes.payments.PaymentRepositoryINFRA", fake_repo)
+    app.dependency_overrides[get_db] = fake_db
+
+    response = client.get(f"/v1/payments/{payment.id}", headers=auth_headers())
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+def test_cancel_subscription_returns_accepted_job(client, monkeypatch):
+    subscription = make_subscription()
+    fake_repo, fake_db = override_subscription_lookup(subscription)
+    monkeypatch.setattr("app.web.routes.subscriptions.SubscriptionRepositoryINFRA", fake_repo)
+    app.dependency_overrides[get_db] = fake_db
+
+    headers = auth_headers() | {"Idempotency-Key": "cancel-idem-1"}
+    response = client.post(f"/v1/subscriptions/{subscription.id}/cancel", json={"reason": "pedido do cliente"}, headers=headers)
+
+    assert response.status_code == 202
+    assert response.json()["job_id"] == "job-1"
+
+
+def test_cancel_subscription_requires_authentication(client):
+    response = client.post(f"/v1/subscriptions/{uuid4()}/cancel", json={"reason": "pedido"})
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
+def test_cancel_subscription_requires_scope(client, monkeypatch):
+    original = settings.INTERNAL_API_CLIENTS
+    settings.INTERNAL_API_CLIENTS = {
+        "neectify_shop": InternalApiClientConfig(api_key="fake-neectify-shop-key", scopes=["subscriptions:create"])
+    }
+    try:
+        response = client.post(f"/v1/subscriptions/{uuid4()}/cancel", json={"reason": "pedido"}, headers=auth_headers() | {"Idempotency-Key": "cancel-no-scope"})
+    finally:
+        settings.INTERNAL_API_CLIENTS = original
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+
+
+def test_cancel_subscription_returns_not_found_for_missing_subscription(client, monkeypatch):
+    fake_repo, fake_db = override_subscription_lookup(None)
+    monkeypatch.setattr("app.web.routes.subscriptions.SubscriptionRepositoryINFRA", fake_repo)
+    app.dependency_overrides[get_db] = fake_db
+
+    response = client.post(f"/v1/subscriptions/{uuid4()}/cancel", json={"reason": "pedido"}, headers=auth_headers() | {"Idempotency-Key": "cancel-missing"})
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+def test_cancel_subscription_hides_other_system_resources(client, monkeypatch):
+    subscription = make_subscription(system=System.MARKETFY)
+    fake_repo, fake_db = override_subscription_lookup(subscription)
+    monkeypatch.setattr("app.web.routes.subscriptions.SubscriptionRepositoryINFRA", fake_repo)
+    app.dependency_overrides[get_db] = fake_db
+
+    response = client.post(f"/v1/subscriptions/{subscription.id}/cancel", json={"reason": "pedido"}, headers=auth_headers() | {"Idempotency-Key": "cancel-foreign"})
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+def test_cancel_subscription_rejects_already_canceled_subscription(client, monkeypatch, fake_redis):
+    subscription = make_subscription(status=SubscriptionStatus.CANCELED)
+    fake_repo, fake_db = override_subscription_lookup(subscription)
+    monkeypatch.setattr("app.web.routes.subscriptions.SubscriptionRepositoryINFRA", fake_repo)
+    app.dependency_overrides[get_db] = fake_db
+
+    response = client.post(f"/v1/subscriptions/{subscription.id}/cancel", json={"reason": "pedido"}, headers=auth_headers() | {"Idempotency-Key": "cancel-canceled"})
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "conflict"
+    idempotency_keys = [key for key in fake_redis.values if key.startswith("billing_core:idempotency:subscription_cancel")]
+    assert idempotency_keys == []
+
+
+def test_cancel_subscription_is_idempotent_per_key_and_payload(client, monkeypatch):
+    subscription = make_subscription()
+    fake_repo, fake_db = override_subscription_lookup(subscription)
+    monkeypatch.setattr("app.web.routes.subscriptions.SubscriptionRepositoryINFRA", fake_repo)
+    app.dependency_overrides[get_db] = fake_db
+    headers = auth_headers() | {"Idempotency-Key": "cancel-idem-2"}
+
+    first = client.post(f"/v1/subscriptions/{subscription.id}/cancel", json={"reason": "pedido"}, headers=headers)
+    second = client.post(f"/v1/subscriptions/{subscription.id}/cancel", json={"reason": "pedido"}, headers=headers)
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert first.json()["job_id"] == second.json()["job_id"]
+
+
+def test_cancel_subscription_rejects_same_idempotency_key_with_different_payload(client, monkeypatch):
+    subscription = make_subscription()
+    fake_repo, fake_db = override_subscription_lookup(subscription)
+    monkeypatch.setattr("app.web.routes.subscriptions.SubscriptionRepositoryINFRA", fake_repo)
+    app.dependency_overrides[get_db] = fake_db
+    headers = auth_headers() | {"Idempotency-Key": "cancel-idem-3"}
+
+    first = client.post(f"/v1/subscriptions/{subscription.id}/cancel", json={"reason": "pedido 1"}, headers=headers)
+    second = client.post(f"/v1/subscriptions/{subscription.id}/cancel", json={"reason": "pedido 2"}, headers=headers)
 
     assert first.status_code == 202
     assert second.status_code == 409
     assert second.json()["error"]["code"] == "conflict"
 
 
+def test_cancel_subscription_rejects_large_reason(client, monkeypatch):
+    subscription = make_subscription()
+    fake_repo, fake_db = override_subscription_lookup(subscription)
+    monkeypatch.setattr("app.web.routes.subscriptions.SubscriptionRepositoryINFRA", fake_repo)
+    app.dependency_overrides[get_db] = fake_db
+
+    response = client.post(
+        f"/v1/subscriptions/{subscription.id}/cancel",
+        json={"reason": "x" * 501},
+        headers=auth_headers() | {"Idempotency-Key": "cancel-large-reason"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_cancel_subscription_rate_limit_blocks_high_frequency_calls(client, monkeypatch):
+    subscription = make_subscription()
+    fake_repo, fake_db = override_subscription_lookup(subscription)
+    monkeypatch.setattr("app.web.routes.subscriptions.SubscriptionRepositoryINFRA", fake_repo)
+    app.dependency_overrides[get_db] = fake_db
+    responses = []
+    for attempt in range(settings.INTERNAL_RATE_LIMIT_REQUESTS + 1):
+        responses.append(
+            client.post(
+                f"/v1/subscriptions/{subscription.id}/cancel",
+                json={"reason": "pedido"},
+                headers=auth_headers() | {"Idempotency-Key": f"cancel-rate-{attempt}"},
+            )
+        )
+
+    assert responses[0].status_code == 202
+    assert responses[-1].status_code == 429
+    assert responses[-1].json()["error"]["code"] == "rate_limit_exceeded"
+
+
+def test_webhook_rejects_duplicate_payload_in_replay_window(client):
+    payload = {"event": "PAYMENT_RECEIVED", "payment": {"id": "pay-1"}}
+    headers = {"asaas-access-token": settings.ASAAS_WEBHOOK_SECRET, "content-type": "application/json"}
+
+    first = client.post("/v1/webhooks/asaas", content=json.dumps(payload), headers=headers)
+    second = client.post("/v1/webhooks/asaas", content=json.dumps(payload), headers=headers)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["received"] is True
+    assert second.json()["duplicate"] is True
+
+
 def test_webhook_requires_json_content_type(client):
     payload = {"event": "PAYMENT_RECEIVED", "payment": {"id": "pay-1"}}
-    headers = {"asaas-access-token": "fake-asaas-webhook-secret", "content-type": "text/plain"}
+    headers = {"asaas-access-token": settings.ASAAS_WEBHOOK_SECRET, "content-type": "text/plain"}
 
     response = client.post("/v1/webhooks/asaas", content=json.dumps(payload), headers=headers)
 
@@ -72,7 +369,7 @@ def test_webhook_requires_json_content_type(client):
 
 def test_webhook_requires_identifiable_event(client):
     payload = {"event": "PAYMENT_RECEIVED", "payment": {}}
-    headers = {"asaas-access-token": "fake-asaas-webhook-secret", "content-type": "application/json"}
+    headers = {"asaas-access-token": settings.ASAAS_WEBHOOK_SECRET, "content-type": "application/json"}
 
     response = client.post("/v1/webhooks/asaas", content=json.dumps(payload), headers=headers)
 
@@ -80,12 +377,24 @@ def test_webhook_requires_identifiable_event(client):
     assert response.json()["error"]["code"] == "bad_request"
 
 
+def test_webhook_replay_key_is_not_claimed_when_event_is_rejected(client):
+    payload = {"event": "PAYMENT_RECEIVED", "payment": {}}
+    headers = {"asaas-access-token": settings.ASAAS_WEBHOOK_SECRET, "content-type": "application/json"}
+
+    first = client.post("/v1/webhooks/asaas", content=json.dumps(payload), headers=headers)
+    second = client.post("/v1/webhooks/asaas", content=json.dumps(payload), headers=headers)
+
+    assert first.status_code == 400
+    assert second.status_code == 400
+    assert "duplicate" not in second.json()
+
+
 def test_webhook_rejects_payload_above_size_limit(client):
     original_limit = settings.MAX_WEBHOOK_BODY_BYTES
     settings.MAX_WEBHOOK_BODY_BYTES = 32
     try:
         payload = {"event": "PAYMENT_RECEIVED", "payment": {"id": "pay-1", "description": "x" * 128}}
-        headers = {"asaas-access-token": "fake-asaas-webhook-secret", "content-type": "application/json"}
+        headers = {"asaas-access-token": settings.ASAAS_WEBHOOK_SECRET, "content-type": "application/json"}
         response = client.post("/v1/webhooks/asaas", content=json.dumps(payload), headers=headers)
     finally:
         settings.MAX_WEBHOOK_BODY_BYTES = original_limit

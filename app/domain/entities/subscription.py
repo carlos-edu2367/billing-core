@@ -39,6 +39,9 @@ class Subscription():
         trial_ends_at: datetime | None = None,
         next_due_date: datetime | None = None,
         cancelled_at: datetime | None = None,
+        cancellation_requested_at: datetime | None = None,
+        cancellation_reason: str | None = None,
+        cancellation_job_id: str | None = None,
         id: UUID = None,
         webhook_link: str | None = None,
     ):
@@ -76,6 +79,9 @@ class Subscription():
         self.trial_ends_at = trial_ends_at
         self.next_due_date = next_due_date
         self.cancelled_at = cancelled_at
+        self.cancellation_requested_at = cancellation_requested_at
+        self.cancellation_reason = (cancellation_reason or "").strip() or None
+        self.cancellation_job_id = (cancellation_job_id or "").strip() or None
         self.webhook_link = webhook_link
         self.value = value
 
@@ -103,9 +109,37 @@ class Subscription():
     def belongs_to_system(self, system: System) -> bool:
         return self.from_system == system
 
-    def cancel(self):
+    def request_cancellation(self, reason: str | None = None, job_id: str | None = None):
+        if self.status == SubscriptionStatus.CANCELED:
+            raise DomainError("Assinatura ja cancelada.")
+
+        if self.status == SubscriptionStatus.CANCELLATION_PENDING:
+            return
+
+        if self.status not in {SubscriptionStatus.PENDING, SubscriptionStatus.ACTIVE}:
+            raise DomainError("Assinatura nao pode ser cancelada no estado atual.")
+
+        self.status = SubscriptionStatus.CANCELLATION_PENDING
+        self.cancellation_requested_at = datetime.now(timezone.utc)
+        self.cancellation_reason = (reason or "").strip() or None
+        self.cancellation_job_id = (job_id or "").strip() or None
+
+    def cancel(
+        self,
+        cancelled_at: datetime | None = None,
+        reason: str | None = None,
+        job_id: str | None = None,
+    ):
         if self.status == SubscriptionStatus.CANCELED:
             return
 
         self.status = SubscriptionStatus.CANCELED
-        self.cancelled_at = datetime.now(timezone.utc)
+        self.cancelled_at = cancelled_at or datetime.now(timezone.utc)
+        normalized_reason = (reason or "").strip()
+        if normalized_reason:
+            self.cancellation_reason = normalized_reason
+        normalized_job_id = (job_id or "").strip()
+        if normalized_job_id:
+            self.cancellation_job_id = normalized_job_id
+        if self.cancellation_requested_at is None:
+            self.cancellation_requested_at = self.cancelled_at

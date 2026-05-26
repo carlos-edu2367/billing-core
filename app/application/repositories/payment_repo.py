@@ -18,6 +18,10 @@ class PaymentRepository(ABC):
         pass
 
     @abstractmethod
+    async def get_by_system_ref(self, system_id: str, system: System) -> Payment | None:
+        pass
+
+    @abstractmethod
     async def list_by_system(self, system: System, limit: int, page: int) -> list[Payment]:
         pass
 

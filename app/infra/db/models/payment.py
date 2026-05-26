@@ -1,8 +1,8 @@
 from app.infra.db.setup import Base
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
-from sqlalchemy import DECIMAL, DateTime, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import DECIMAL, Date, DateTime, ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.infra.db.types.enum_value_type import EnumValueType
@@ -16,10 +16,12 @@ from app.domain.enums.system import System
 class PaymentModel(Base):
     __tablename__ = "payments"
     __table_args__ = (
-        UniqueConstraint("system_payment_id", name="uq_payments_system_ref"),
+        UniqueConstraint("system_payment_id", "from_system", name="uq_payments_system_ref"),
         UniqueConstraint("provider_payment_id", name="uq_payments_provider_ref"),
         Index("ix_payments_subscription_paid_date", "subscription_id", "paid_date"),
         Index("ix_payments_system_status_paid_date", "from_system", "payment_status", "paid_date"),
+        Index("ix_payments_system_status_created", "from_system", "payment_status", "created_at"),
+        Index("ix_payments_system_external_reference", "from_system", "external_reference"),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -40,6 +42,10 @@ class PaymentModel(Base):
     checkout_link: Mapped[str] = mapped_column(String, nullable=True)
     subscription_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("subscriptions.id"), nullable=True)
     webhook_link: Mapped[str] = mapped_column(String, nullable=True)
+    due_date: Mapped[date] = mapped_column(Date, nullable=True, index=True)
+    external_reference: Mapped[str] = mapped_column(String(255), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     subscription: Mapped["SubscriptionModel"] = relationship(back_populates="payments", lazy="joined")
 
@@ -63,5 +69,9 @@ class PaymentModel(Base):
             checkout_link=self.checkout_link,
             id=self.id,
             subscription_id=self.subscription_id,
-            webhook_link=self.webhook_link
+            webhook_link=self.webhook_link,
+            due_date=self.due_date,
+            external_reference=self.external_reference,
+            created_at=self.created_at,
+            updated_at=self.updated_at,
         )

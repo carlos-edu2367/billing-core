@@ -30,6 +30,30 @@ class SubscriptionStatusResponse:
 
 
 @dataclass
+class CreatePaymentGatewayResponse:
+    payment_id: str
+    status: str
+    value: Decimal
+    due_date: date
+    invoice_url: str | None
+    billing_type: str
+    external_reference: str | None
+
+
+@dataclass
+class PaymentStatusGatewayResponse:
+    payment_id: str
+    status: str
+    value: Decimal
+    net_value: Decimal | None
+    due_date: date | None
+    payment_date: date | None
+    invoice_url: str | None
+    billing_type: str
+    external_reference: str | None
+
+
+@dataclass
 class GetCustomerResponse:
     cus_id: str
     name: str
@@ -60,7 +84,27 @@ class InterfaceGateway(ABC):
         pass
 
     @abstractmethod
+    async def cancel_subscription(self, subscription_id: str) -> str:
+        pass
+
+    @abstractmethod
     async def verify_status(self, subscription_id: str) -> SubscriptionStatusResponse:
+        pass
+
+    @abstractmethod
+    async def create_payment(
+        self,
+        customer_provider_id: str,
+        billing_type: PaymentType,
+        value: Decimal,
+        due_date: date,
+        description: str,
+        external_reference: str,
+    ) -> CreatePaymentGatewayResponse:
+        pass
+
+    @abstractmethod
+    async def get_payment(self, payment_id: str) -> PaymentStatusGatewayResponse:
         pass
 
     @abstractmethod

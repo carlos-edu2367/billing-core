@@ -24,15 +24,35 @@ Endpoint atual:
 
 ## Eventos relevantes hoje
 
+- `PAYMENT_CONFIRMED`
 - `PAYMENT_RECEIVED`
+- `PAYMENT_OVERDUE`
+- `PAYMENT_REFUNDED`
+- `PAYMENT_DELETED`
 - `SUBSCRIPTION_INACTIVATED`
 - `SUBSCRIPTION_DELETED`
+
+Eventos de pagamento sem `subscription` sao tratados como pagamentos avulsos. O Billing Core procura o pagamento local por `provider_payment_id` e aplica a transicao correspondente:
+
+- `PAYMENT_CONFIRMED`: `confirmed`
+- `PAYMENT_RECEIVED`: `paid`
+- `PAYMENT_OVERDUE`: `overdue`
+- `PAYMENT_REFUNDED` e `PAYMENT_CHARGEBACK_REQUESTED`: `refunded` quando aplicavel
+- `PAYMENT_DELETED`: `canceled` quando ainda pendente ou vencido
+
+Quando o gateway confirma cancelamento por webhook:
+
+- se a assinatura estiver `active` ou `pending`, o core a marca como `canceled`
+- se a assinatura estiver `cancellation_pending`, o evento apenas conclui o estado local esperado
+- se a assinatura ja estiver `canceled`, o processamento permanece idempotente
 
 ## Idempotencia
 
 - replay curto na borda HTTP via Redis
+- duplicatas conhecidas na janela de replay recebem resposta `200` com `{"received": true, "duplicate": true}`
 - idempotencia de negocio via `WebhookEvent.event_id`
 - lock adicional de processamento no worker
+- compatibilidade com jobs locais de cancelamento chegando antes ou depois do webhook
 
 ## Webhook interno Neectify
 
@@ -41,6 +61,8 @@ O Billing Core tambem pode enviar webhook interno assinado por HMAC para sistema
 Header usado:
 
 - `X-Webhook-Signature-256`
+- `X-Webhook-Id`
+- `X-Webhook-Event`
 
 Configuracao:
 

@@ -36,6 +36,9 @@ class SubscriptionModel(Base):
     trial_ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     next_due_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
     cancelled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancellation_requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancellation_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    cancellation_job_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     webhook_link: Mapped[str] = mapped_column(String, nullable=True)
 
     payments: Mapped[list["PaymentModel"]] = relationship(back_populates="subscription", cascade="all, delete-orphan")
@@ -57,6 +60,9 @@ class SubscriptionModel(Base):
             trial_ends_at=self.trial_ends_at,
             next_due_date=self.next_due_date,
             cancelled_at=self.cancelled_at,
+            cancellation_requested_at=self.cancellation_requested_at,
+            cancellation_reason=self.cancellation_reason,
+            cancellation_job_id=self.cancellation_job_id,
             id=self.id,
             webhook_link=self.webhook_link
         )

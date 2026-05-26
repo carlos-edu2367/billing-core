@@ -1,4 +1,6 @@
-from app.infra.db.models.payment import Payment, PaymentModel, System
+from app.domain.entities.payment import Payment
+from app.domain.enums.system import System
+from app.infra.db.models.payment import PaymentModel
 from app.application.repositories.payment_repo import PaymentRepository
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +26,15 @@ class PaymentRepositoryINFRA(PaymentRepository):
     
     async def get_by_system_id(self, system_id: str) -> Payment | None:
         stmt = select(PaymentModel).where(PaymentModel.system_payment_id == system_id)
+        r = await self.session.execute(stmt)
+        r = r.scalars().one_or_none()
+        return r.to_domain() if r else None
+
+    async def get_by_system_ref(self, system_id: str, system: System) -> Payment | None:
+        stmt = select(PaymentModel).where(
+            PaymentModel.system_payment_id == system_id,
+            PaymentModel.from_system == system,
+        )
         r = await self.session.execute(stmt)
         r = r.scalars().one_or_none()
         return r.to_domain() if r else None
@@ -62,7 +73,11 @@ class PaymentRepositoryINFRA(PaymentRepository):
                 movimentation_type=payment.movimentation_type,
                 checkout_link=payment.checkout_link,
                 subscription_id=payment.subscription_id,
-                webhook_link=payment.webhook_link
+                webhook_link=payment.webhook_link,
+                due_date=payment.due_date,
+                external_reference=payment.external_reference,
+                created_at=payment.created_at,
+                updated_at=payment.updated_at,
             )
             self.session.add(new)
             await self.session.flush()
@@ -89,6 +104,10 @@ class PaymentRepositoryINFRA(PaymentRepository):
         r.checkout_link = payment.checkout_link
         r.subscription_id = payment.subscription_id
         r.webhook_link = payment.webhook_link
+        r.due_date = payment.due_date
+        r.external_reference = payment.external_reference
+        r.created_at = payment.created_at
+        r.updated_at = payment.updated_at
         await self.session.flush()
         return r.to_domain()
     

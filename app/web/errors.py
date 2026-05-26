@@ -9,7 +9,7 @@ from app.domain.errors import DomainError, NotFoundError
 logger = logging.getLogger(__name__)
 
 
-def _error_response(request: Request, status_code: int, code: str, message: str) -> JSONResponse:
+def _error_response(request: Request, status_code: int, code: str, message: str, headers: dict | None = None) -> JSONResponse:
     request_id = getattr(request.state, "request_id", None)
     content = {
         "error": {
@@ -18,7 +18,7 @@ def _error_response(request: Request, status_code: int, code: str, message: str)
             "request_id": request_id,
         }
     }
-    return JSONResponse(status_code=status_code, content=content)
+    return JSONResponse(status_code=status_code, content=content, headers=headers)
 
 
 def register_request_too_large(request_id: str | None) -> JSONResponse:
@@ -57,7 +57,7 @@ def register_exception_handlers(app: FastAPI):
             status.HTTP_429_TOO_MANY_REQUESTS: "rate_limit_exceeded",
             status.HTTP_422_UNPROCESSABLE_ENTITY: "validation_error",
         }.get(exc.status_code, "http_error")
-        return _error_response(request, exc.status_code, code, str(exc.detail))
+        return _error_response(request, exc.status_code, code, str(exc.detail), headers=exc.headers)
 
     @app.exception_handler(NotFoundError)
     async def handle_not_found(request: Request, exc: NotFoundError):

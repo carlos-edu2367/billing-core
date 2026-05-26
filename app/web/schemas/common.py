@@ -24,8 +24,8 @@ class AcceptedJobResponse(BaseModel):
         }
     )
 
-    job_id: str
-    message: str
+    job_id: str = Field(description="Identificador do job enfileirado para acompanhamento posterior.")
+    message: str = Field(description="Mensagem resumindo se o processamento foi aceito ou reaproveitado por idempotência.")
 
 
 class JobStatus(str, Enum):
@@ -55,17 +55,17 @@ class JobStatusResponse(BaseModel):
         }
     )
 
-    job_id: str
-    status: JobStatus
-    job_name: str | None = None
-    attempt: int | None = None
-    max_tries: int | None = None
-    request_id: str | None = None
-    created_at: datetime | None = None
-    started_at: datetime | None = None
-    finished_at: datetime | None = None
-    error_code: str | None = None
-    error_message: str | None = None
+    job_id: str = Field(description="Identificador do job.")
+    status: JobStatus = Field(description="Estado atual do processamento assíncrono.")
+    job_name: str | None = Field(default=None, description="Nome técnico da rotina executada pelo worker.")
+    attempt: int | None = Field(default=None, description="Tentativa atual de execução.")
+    max_tries: int | None = Field(default=None, description="Número máximo configurado de tentativas.")
+    request_id: str | None = Field(default=None, description="Correlation ID associado à requisição original.")
+    created_at: datetime | None = Field(default=None, description="Data/hora em que o job foi registrado.")
+    started_at: datetime | None = Field(default=None, description="Data/hora em que o worker iniciou a execução.")
+    finished_at: datetime | None = Field(default=None, description="Data/hora de finalização do job, quando disponível.")
+    error_code: str | None = Field(default=None, description="Código de erro operacional, quando houver.")
+    error_message: str | None = Field(default=None, description="Mensagem de erro registrada na tentativa atual/final.")
 
 
 def build_error_responses(*status_codes: int) -> dict[int, dict[str, object]]:

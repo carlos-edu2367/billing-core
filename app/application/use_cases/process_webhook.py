@@ -4,6 +4,7 @@ from app.application.interfaces.uow_provider import UowProvider
 from app.application.repositories.payment_repo import PaymentRepository
 from app.application.repositories.subscription_repo import SubscriptionRepository
 from app.application.repositories.webhook_event_repo import WebhookEventRepository
+from app.application.use_cases.reconcile_payment import apply_gateway_payment_status
 from app.domain.entities.payment import Payment
 from app.domain.entities.webhook_event import WebhookEvent
 from app.domain.errors import DomainError
@@ -32,6 +33,37 @@ class ProcessWebhookService():
                 provider=gateway_provider,
                 event_type=payload.event.value,
                 payload=payload.model_dump(mode="json"),
+            )
+
+        if payload.details.id and not payload.details.subscription:
+            payment = await self.payment_repo.get_by_provider_id(payload.details.id)
+            if payment is None:
+                event.mark_as_processed()
+                await self.webhook_event_repo.save(event)
+                await self.uow.commit()
+                return None
+
+            status = payload.details.status or payload.event.value.removeprefix("PAYMENT_")
+            changed = apply_gateway_payment_status(
+                payment,
+                status,
+                payload.details.payment_date.date() if payload.details.payment_date else None,
+                payload.details.net_value,
+            )
+            if changed:
+                payment = await self.payment_repo.save(payment)
+
+            event.mark_as_processed()
+            await self.webhook_event_repo.save(event)
+            await self.uow.commit()
+
+            if not changed:
+                return None
+
+            return ProcessWebhookResponse(
+                event=InternalEventType.PAYMENT_STATUS_UPDATED,
+                payment_id=payment.id,
+                subscription_id=None,
             )
 
         if payload.event == EventType.PAYMENT_RECEIVED and payload.details.subscription:

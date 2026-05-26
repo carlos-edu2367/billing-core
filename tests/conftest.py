@@ -18,10 +18,12 @@ class FakeRedis:
         self.hashes: dict[str, dict[str, str]] = defaultdict(dict)
         self.sorted_sets: dict[str, dict[str, float]] = defaultdict(dict)
         self.sets: dict[str, set[str]] = defaultdict(set)
+        self.enqueued_jobs: list[tuple[tuple, dict]] = []
         self.job_counter = 0
 
     async def enqueue_job(self, *args, **kwargs):
         self.job_counter += 1
+        self.enqueued_jobs.append((args, kwargs))
         return FakeJob(f"job-{self.job_counter}")
 
     async def setex(self, key: str, ttl: int, value):
@@ -80,10 +82,17 @@ def fake_internal_clients():
     settings.INTERNAL_API_CLIENTS = {
         "neectify_shop": InternalApiClientConfig(
             api_key="fake-neectify-shop-key",
-            scopes=["subscriptions:create", "jobs:read", "metrics:read"],
+            scopes=[
+                "subscriptions:create",
+                "subscriptions:cancel",
+                "payments:create",
+                "payments:read",
+                "jobs:read",
+                "metrics:read",
+            ],
         )
     }
-    settings.ASAAS_WEBHOOK_SECRET = "fake-asaas-webhook-secret"
+    settings.ASAAS_WEBHOOK_SECRET = "fake-asaas-webhook-secret-with-32-chars"
     settings.ALLOWED_INTERNAL_WEBHOOK_HOSTS = ["hooks.neectify.local"]
     yield
     settings.INTERNAL_API_CLIENTS = original
@@ -101,3 +110,4 @@ def client(fake_redis):
     with TestClient(app) as test_client:
         app.state.redis_pool = fake_redis
         yield test_client
+        app.dependency_overrides.clear()

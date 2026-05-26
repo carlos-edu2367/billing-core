@@ -30,6 +30,15 @@ Este guia serve para conectar um novo produto da Neectify ao Billing Core sem du
 - o `webhook_link` precisa apontar para host permitido
 - a API key do produto deve ter apenas os scopes necessarios
 
+## Pagamentos avulsos
+
+1. Criar customer no gateway ou reutilizar `customer_provider_id`.
+2. Chamar `POST /v1/payments` com `Idempotency-Key`.
+3. Ler `job_id` e consultar `GET /v1/jobs/{job_id}` ate obter o resultado.
+4. Redirecionar o usuario para `checkout_url`.
+5. Receber webhook interno assinado para mudancas de status.
+6. Se necessario, consultar `GET /v1/payments/{payment_id}` respeitando 10 segundos entre chamadas para o mesmo pagamento.
+
 ## Quando um novo gateway entrar
 
 O SaaS nao deve conhecer detalhes do gateway. A integracao continua com o Billing Core. O provider externo fica isolado na camada `app/infra/interfaces`.

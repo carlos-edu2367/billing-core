@@ -1,13 +1,19 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
+from app.application.dtos.request.payment import CreatePaymentDTO
 from app.application.dtos.request.subscription import CreateSubscriptionDTO
+from app.application.dtos.request.subscription_cancel import CancelSubscriptionDTO
 from app.application.dtos.request.webhook import WebhookPayload
-from app.application.dtos.response.webhook import InternalEventType, SendInternalWebhookSubscription
+from app.application.dtos.response.webhook import InternalEventType, SendInternalWebhookPayment, SendInternalWebhookSubscription
+from app.application.use_cases.cancel_subscription import CancelSubscription
+from app.application.use_cases.create_payment import CreatePayment
 from app.application.use_cases.create_subscription import CreateSubscription
+from app.application.use_cases.reconcile_payment import ReconcilePayment
 from app.domain.entities.internal_webhook_delivery import InternalWebhookDelivery
 from app.domain.errors import DomainError, NotFoundError
 from app.domain.enums.gateway_provider import GatewayProvider
+from app.domain.enums.payment_status import PaymentStatus
 from app.infra.config import settings
 from app.infra.db.setup import AsyncSessionLocal
 from app.infra.jobs import register_dead_letter, update_job_metadata
@@ -72,6 +78,30 @@ async def _build_internal_delivery(
     )
 
 
+async def _build_payment_internal_delivery(payment) -> InternalWebhookDelivery | None:
+    if not payment.webhook_link:
+        return None
+
+    payload = SendInternalWebhookPayment(
+        event=InternalEventType.PAYMENT_STATUS_UPDATED,
+        payment_id=payment.id,
+        system_payment_id=payment.system_payment_id,
+        payment_status=payment.payment_status,
+        value=payment.value,
+        paid_date=payment.paid_date.date() if payment.paid_date else None,
+        checkout_url=payment.checkout_link,
+    )
+    dedupe_key = f"payment:{payment.id}:{payment.payment_status.value}:{payment.updated_at.isoformat()}"
+    return InternalWebhookDelivery(
+        dedupe_key=dedupe_key,
+        event_type=payload.event.value,
+        target_url=payment.webhook_link,
+        payload=payload.model_dump(mode="json"),
+        subscription_id=None,
+        payment_id=payment.id,
+    )
+
+
 async def process_webhook(ctx, payload_dict: dict, gateway_provider_str: str):
     job_id = ctx["job_id"]
     job_try = ctx["job_try"]
@@ -123,7 +153,11 @@ async def process_webhook(ctx, payload_dict: dict, gateway_provider_str: str):
             result = await service.execute(gateway_provider, payload)
 
             if result is not None:
-                delivery = await _build_internal_delivery(result, sub_repo, payment_repo)
+                if result.subscription_id is None and result.payment_id is not None:
+                    payment = await payment_repo.get_by_id(result.payment_id)
+                    delivery = await _build_payment_internal_delivery(payment)
+                else:
+                    delivery = await _build_internal_delivery(result, sub_repo, payment_repo)
                 if delivery is not None:
                     existing_delivery = await delivery_repo.get_by_dedupe_key(delivery.dedupe_key)
                     if existing_delivery is None:
@@ -250,6 +284,271 @@ async def create_subscription_worker(ctx, dto_dict: dict, customer_provider_id: 
         raise
 
 
+async def create_payment_worker(ctx, dto_dict: dict, customer_provider_id: str, system_str: str):
+    job_id = ctx["job_id"]
+    job_try = ctx["job_try"]
+
+    try:
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="processing",
+            attempt=job_try,
+            started_at=datetime.now(timezone.utc),
+            error_code=None,
+            error_message=None,
+        )
+        dto = CreatePaymentDTO.model_validate(dto_dict | {"customer_provider_id": customer_provider_id})
+        internal_delivery_id: UUID | None = None
+
+        async with AsyncSessionLocal() as session:
+            customer_repo = CustomerRepositoryINFRA(session)
+            payment_repo = PaymentRepositoryINFRA(session)
+            gateway_operation_repo = GatewayOperationRepositoryINFRA(session)
+            delivery_repo = InternalWebhookDeliveryRepositoryINFRA(session)
+            uow = UowProvider(session)
+            get_gateway = GetGatewayInfra()
+
+            customer = await customer_repo.get_by_provider_id(customer_provider_id)
+            service = CreatePayment(
+                get_gateway=get_gateway,
+                uow=uow,
+                payment_repo=payment_repo,
+                gateway_operation_repo=gateway_operation_repo,
+            )
+            result = await service.execute(dto, customer)
+
+            await ctx["redis"].enqueue_job(
+                "workers:tasks.reconcile_pending_payment_worker",
+                str(result.payment_id),
+                _defer_by=900,
+            )
+
+            if result.payment_status != PaymentStatus.PENDING:
+                payment = await payment_repo.get_by_id(result.payment_id)
+                delivery = await _build_payment_internal_delivery(payment)
+                if delivery is not None:
+                    existing_delivery = await delivery_repo.get_by_dedupe_key(delivery.dedupe_key)
+                    if existing_delivery is None:
+                        delivery = await delivery_repo.save(delivery)
+                        await uow.commit()
+                        internal_delivery_id = delivery.id
+
+        if internal_delivery_id is not None:
+            await ctx["redis"].enqueue_job(
+                "workers:tasks.send_internal_webhook",
+                str(internal_delivery_id),
+            )
+
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="completed",
+            finished_at=datetime.now(timezone.utc),
+        )
+        ctx["logger"].info("Payment created", extra={"job_id": job_id, "job_try": job_try, "system": system_str})
+        return {"status": "success", "result": _dump_result(result)}
+    except (DomainError, NotFoundError) as exc:
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="failed",
+            attempt=job_try,
+            finished_at=datetime.now(timezone.utc),
+            error_code=exc.__class__.__name__,
+            error_message=str(exc),
+        )
+        await register_dead_letter(ctx["redis"], "create_payment_worker", job_id)
+        ctx["logger"].warning("Payment rejected", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
+        return {"status": "failed", "error": str(exc)}
+    except Exception as exc:
+        is_final_try = job_try >= settings.WORKER_MAX_TRIES
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="failed" if is_final_try else "retrying",
+            attempt=job_try,
+            finished_at=datetime.now(timezone.utc) if is_final_try else None,
+            error_code=exc.__class__.__name__,
+            error_message=str(exc),
+        )
+        if is_final_try:
+            await register_dead_letter(ctx["redis"], "create_payment_worker", job_id)
+        ctx["logger"].error("Payment creation failed", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
+        raise
+
+
+async def reconcile_pending_payment_worker(ctx, payment_id: str):
+    job_id = ctx["job_id"]
+    job_try = ctx["job_try"]
+
+    try:
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="processing",
+            attempt=job_try,
+            started_at=datetime.now(timezone.utc),
+            error_code=None,
+            error_message=None,
+            resource_type="payment",
+            resource_id=payment_id,
+        )
+        internal_delivery_id: UUID | None = None
+
+        async with AsyncSessionLocal() as session:
+            payment_repo = PaymentRepositoryINFRA(session)
+            delivery_repo = InternalWebhookDeliveryRepositoryINFRA(session)
+            uow = UowProvider(session)
+            get_gateway = GetGatewayInfra()
+
+            service = ReconcilePayment(
+                get_gateway=get_gateway,
+                uow=uow,
+                payment_repo=payment_repo,
+            )
+            result = await service.execute(UUID(payment_id))
+
+            if result is not None:
+                delivery = await _build_payment_internal_delivery(result)
+                if delivery is not None:
+                    existing_delivery = await delivery_repo.get_by_dedupe_key(delivery.dedupe_key)
+                    if existing_delivery is None:
+                        delivery = await delivery_repo.save(delivery)
+                        await uow.commit()
+                        internal_delivery_id = delivery.id
+
+        if internal_delivery_id is not None:
+            await ctx["redis"].enqueue_job(
+                "workers:tasks.send_internal_webhook",
+                str(internal_delivery_id),
+            )
+
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="completed",
+            finished_at=datetime.now(timezone.utc),
+        )
+        ctx["logger"].info("Payment reconciled", extra={"job_id": job_id, "job_try": job_try, "payment_id": payment_id})
+        return {"status": "success", "payment_id": payment_id}
+    except (DomainError, NotFoundError, ValueError) as exc:
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="failed",
+            attempt=job_try,
+            finished_at=datetime.now(timezone.utc),
+            error_code=exc.__class__.__name__,
+            error_message=str(exc),
+        )
+        await register_dead_letter(ctx["redis"], "reconcile_pending_payment_worker", job_id)
+        ctx["logger"].warning("Payment reconciliation rejected", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
+        return {"status": "failed", "error": str(exc)}
+    except Exception as exc:
+        is_final_try = job_try >= settings.WORKER_MAX_TRIES
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="failed" if is_final_try else "retrying",
+            attempt=job_try,
+            finished_at=datetime.now(timezone.utc) if is_final_try else None,
+            error_code=exc.__class__.__name__,
+            error_message=str(exc),
+        )
+        if is_final_try:
+            await register_dead_letter(ctx["redis"], "reconcile_pending_payment_worker", job_id)
+        ctx["logger"].error("Payment reconciliation failed", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
+        raise
+
+
+async def cancel_subscription_worker(ctx, dto_dict: dict):
+    job_id = ctx["job_id"]
+    job_try = ctx["job_try"]
+
+    try:
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="processing",
+            attempt=job_try,
+            started_at=datetime.now(timezone.utc),
+            error_code=None,
+            error_message=None,
+            operation="cancel",
+        )
+        dto = CancelSubscriptionDTO.model_validate(dto_dict | {"job_id": job_id})
+        ctx["logger"].info(
+            "Subscription cancellation processing started",
+            extra={"job_id": job_id, "job_try": job_try, "subscription_id": str(dto.subscription_id), "system": dto.system.value},
+        )
+
+        async with AsyncSessionLocal() as session:
+            sub_repo = SubscriptionRepositoryINFRA(session)
+            gateway_operation_repo = GatewayOperationRepositoryINFRA(session)
+            uow = UowProvider(session)
+            get_gateway = GetGatewayInfra()
+
+            service = CancelSubscription(
+                get_gateway=get_gateway,
+                uow=uow,
+                repo=sub_repo,
+                gateway_operation_repo=gateway_operation_repo,
+            )
+            result = await service.execute(dto)
+
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="completed",
+            finished_at=datetime.now(timezone.utc),
+        )
+        ctx["logger"].info(
+            "Subscription cancellation completed",
+            extra={"job_id": job_id, "job_try": job_try, "subscription_id": str(dto.subscription_id), "system": dto.system.value},
+        )
+        return {"status": "success", "result": _dump_result(result)}
+    except (DomainError, NotFoundError) as exc:
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="failed",
+            attempt=job_try,
+            finished_at=datetime.now(timezone.utc),
+            error_code=exc.__class__.__name__,
+            error_message=str(exc),
+        )
+        await register_dead_letter(ctx["redis"], "cancel_subscription_worker", job_id)
+        ctx["logger"].warning(
+            "Subscription cancellation rejected",
+            extra={"job_id": job_id, "job_try": job_try, "error": str(exc)},
+        )
+        return {"status": "failed", "error": str(exc)}
+    except Exception as exc:
+        is_final_try = job_try >= settings.WORKER_MAX_TRIES
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="failed" if is_final_try else "retrying",
+            attempt=job_try,
+            finished_at=datetime.now(timezone.utc) if is_final_try else None,
+            error_code=exc.__class__.__name__,
+            error_message=str(exc),
+        )
+        if is_final_try:
+            await register_dead_letter(ctx["redis"], "cancel_subscription_worker", job_id)
+            ctx["logger"].error(
+                "Subscription cancellation failed after retries",
+                extra={"job_id": job_id, "job_try": job_try, "error": str(exc)},
+            )
+        else:
+            ctx["logger"].warning(
+                "Subscription cancellation gateway failure, retry scheduled",
+                extra={"job_id": job_id, "job_try": job_try, "error": str(exc)},
+            )
+        raise
+
+
 async def send_internal_webhook(ctx, delivery_id: str):
     job_id = ctx["job_id"]
     job_try = ctx["job_try"]
@@ -277,7 +576,12 @@ async def send_internal_webhook(ctx, delivery_id: str):
             await delivery_repo.save(delivery)
             await uow.commit()
 
-            await internal_webhook.send(url=delivery.target_url, payload=delivery.payload)
+            await internal_webhook.send(
+                url=delivery.target_url,
+                payload=delivery.payload,
+                webhook_id=str(delivery.id) if delivery.id else delivery.dedupe_key,
+                event_type=delivery.event_type,
+            )
 
             delivery.mark_delivered()
             await delivery_repo.save(delivery)

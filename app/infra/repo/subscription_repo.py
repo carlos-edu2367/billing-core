@@ -15,6 +15,14 @@ class SubscriptionRepositoryINFRA(SubscriptionRepository):
             raise NotFoundError("Subscription Not Found")
         return r.to_domain()
 
+    async def get_by_id_for_update(self, id: UUID) -> Subscription:
+        stmt = select(SubscriptionModel).where(SubscriptionModel.id == id).with_for_update()
+        result = await self.session.execute(stmt)
+        record = result.scalars().one_or_none()
+        if not record:
+            raise NotFoundError("Subscription Not Found")
+        return record.to_domain()
+
     async def get_by_provider_id(self, provider_id: str) -> Subscription:
         stmt = select(SubscriptionModel).where(SubscriptionModel.gateway_subscription_id == provider_id)
         r = await self.session.execute(stmt)
@@ -67,6 +75,9 @@ class SubscriptionRepositoryINFRA(SubscriptionRepository):
                 trial_ends_at=sub.trial_ends_at,
                 next_due_date=sub.next_due_date,
                 cancelled_at=sub.cancelled_at,
+                cancellation_requested_at=sub.cancellation_requested_at,
+                cancellation_reason=sub.cancellation_reason,
+                cancellation_job_id=sub.cancellation_job_id,
                 webhook_link=sub.webhook_link
             )
             self.session.add(new)
@@ -92,6 +103,9 @@ class SubscriptionRepositoryINFRA(SubscriptionRepository):
         r.trial_ends_at = sub.trial_ends_at
         r.next_due_date = sub.next_due_date
         r.cancelled_at = sub.cancelled_at
+        r.cancellation_requested_at = sub.cancellation_requested_at
+        r.cancellation_reason = sub.cancellation_reason
+        r.cancellation_job_id = sub.cancellation_job_id
         r.webhook_link = sub.webhook_link
         
         await self.session.flush()

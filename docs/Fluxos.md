@@ -13,6 +13,19 @@
 9. Persiste o primeiro `Payment`.
 10. O consumidor acompanha por `GET /v1/jobs/{job_id}`.
 
+## Fluxo de cancelamento de assinatura
+
+1. Sistema interno chama `POST /v1/subscriptions/{subscription_id}/cancel`.
+2. Auth, scope `subscriptions:cancel`, rate limit e `Idempotency-Key` sao validados.
+3. A API verifica se a assinatura existe e pertence ao `X-System`.
+4. O request vira job ARQ e retorna `job_id`.
+5. O worker executa `CancelSubscription`.
+6. A assinatura vai para `cancellation_pending` antes da chamada externa.
+7. O caso de uso consulta `gateway_operations` e o estado remoto para retry seguro.
+8. O gateway cancela a assinatura quando necessario.
+9. O core marca a assinatura como `canceled`, registra `cancelled_at`, `cancellation_reason` e `cancellation_job_id`.
+10. Um webhook tardio do gateway continua idempotente e nao quebra o estado final local.
+
 ## Fluxo de pagamento recebido por webhook
 
 1. Asaas envia evento.
@@ -54,3 +67,4 @@ Hoje a reconciliacao e principalmente operacional:
 Ponto a validar:
 
 - job automatico de reconciliacao periodica com o gateway ainda nao existe
+- operacoes em `requires_reconciliation` exigem acao operacional antes de nova tentativa manual

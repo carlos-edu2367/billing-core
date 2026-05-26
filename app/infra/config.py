@@ -80,6 +80,15 @@ class Settings(BaseSettings):
         if self.MAX_WEBHOOK_BODY_BYTES > self.MAX_REQUEST_BODY_BYTES:
             raise RuntimeError("Configuracao invalida: MAX_WEBHOOK_BODY_BYTES nao pode exceder MAX_REQUEST_BODY_BYTES.")
 
+        for secret_name, secret_value in {
+            "ASAAS_WEBHOOK_SECRET": self.ASAAS_WEBHOOK_SECRET,
+            "INTERNAL_WEBHOOK_SIGNATURE": self.INTERNAL_WEBHOOK_SIGNATURE,
+        }.items():
+            if len(secret_value.strip()) < 32:
+                raise RuntimeError(f"Configuracao invalida: {secret_name} deve ter pelo menos 32 caracteres.")
+            if any(ch.isspace() for ch in secret_value):
+                raise RuntimeError(f"Configuracao invalida: {secret_name} nao pode conter espacos.")
+
         if self.is_production and not self.ALLOWED_INTERNAL_WEBHOOK_HOSTS:
             raise RuntimeError("Configuracao invalida: ALLOWED_INTERNAL_WEBHOOK_HOSTS e obrigatorio em producao.")
 

@@ -40,6 +40,8 @@ REQUIRED_ROUTES = {
     "/live",
     "/metrics",
     "/v1/subscriptions",
+    "/v1/payments",
+    "/v1/payments/{payment_id}",
     "/v1/jobs/{job_id}",
     "/v1/webhooks/asaas",
 }
@@ -111,6 +113,15 @@ def check_env() -> bool:
 
     asaas_base_url = os.getenv("ASAAS_BASE_URL", "").strip().lower()
     asaas_sandbox = os.getenv("ASAAS_SANDBOX", "true").strip().lower() == "true"
+    for secret_name in ("ASAAS_WEBHOOK_SECRET", "INTERNAL_WEBHOOK_SIGNATURE"):
+        secret_value = os.getenv(secret_name, "")
+        if len(secret_value.strip()) < 32:
+            fail(f"Configuracao invalida: {secret_name} deve ter pelo menos 32 caracteres")
+            success = False
+        if any(ch.isspace() for ch in secret_value):
+            fail(f"Configuracao invalida: {secret_name} nao pode conter espacos")
+            success = False
+
     if app_env in {"production", "prod"}:
         if "sandbox" in asaas_base_url or (not asaas_base_url and asaas_sandbox):
             fail("Configuracao invalida: ambiente de producao apontando para sandbox do Asaas")

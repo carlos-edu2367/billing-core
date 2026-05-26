@@ -5,8 +5,10 @@ import httpx
 
 from app.application.dtos.request.webhook import WebhookPayload
 from app.application.interfaces.gateway_provider import (
+    CreatePaymentGatewayResponse,
     GetCustomerResponse,
     InterfaceGateway,
+    PaymentStatusGatewayResponse,
     SubscriptionPaymentResponse,
     SubscriptionStatusResponse,
 )
@@ -37,6 +39,12 @@ class AsaasAPI:
     async def post(self, endpoint: str, payload: dict) -> dict:
         async with httpx.AsyncClient(timeout=30.0, headers=self.headers) as client:
             response = await client.post(self._build_url(endpoint), json=payload)
+            response.raise_for_status()
+            return response.json()
+
+    async def delete(self, endpoint: str) -> dict:
+        async with httpx.AsyncClient(timeout=30.0, headers=self.headers) as client:
+            response = await client.delete(self._build_url(endpoint))
             response.raise_for_status()
             return response.json()
 
@@ -103,6 +111,10 @@ class AsaasProvider(InterfaceGateway):
             for item in response.get("data", [])
         ]
 
+    async def cancel_subscription(self, subscription_id: str) -> str:
+        await self.asaas.delete(f"/subscriptions/{subscription_id}")
+        return subscription_id
+
     async def verify_status(self, subscription_id: str) -> SubscriptionStatusResponse:
         response = await self.asaas.get(f"/subscriptions/{subscription_id}")
         return SubscriptionStatusResponse(
@@ -112,6 +124,49 @@ class AsaasProvider(InterfaceGateway):
             next_due_date=date.fromisoformat(response["nextDueDate"]),
             value=Decimal(str(response["value"])),
             cycle=response["cycle"],
+        )
+
+    async def create_payment(
+        self,
+        customer_provider_id: str,
+        billing_type: PaymentType,
+        value: Decimal,
+        due_date: date,
+        description: str,
+        external_reference: str,
+    ) -> CreatePaymentGatewayResponse:
+        payload = {
+            "customer": customer_provider_id,
+            "billingType": billing_type.value,
+            "value": float(value),
+            "dueDate": due_date.isoformat(),
+            "description": description,
+            "externalReference": external_reference,
+        }
+        response = await self.asaas.post("/payments", payload)
+        return CreatePaymentGatewayResponse(
+            payment_id=response["id"],
+            status=response["status"],
+            value=Decimal(str(response["value"])),
+            due_date=date.fromisoformat(response["dueDate"]),
+            invoice_url=response.get("invoiceUrl"),
+            billing_type=response["billingType"],
+            external_reference=response.get("externalReference"),
+        )
+
+    async def get_payment(self, payment_id: str) -> PaymentStatusGatewayResponse:
+        response = await self.asaas.get(f"/payments/{payment_id}")
+        payment_date = response.get("paymentDate")
+        return PaymentStatusGatewayResponse(
+            payment_id=response["id"],
+            status=response["status"],
+            value=Decimal(str(response["value"])),
+            net_value=Decimal(str(response["netValue"])) if response.get("netValue") is not None else None,
+            due_date=date.fromisoformat(response["dueDate"]) if response.get("dueDate") else None,
+            payment_date=date.fromisoformat(payment_date) if payment_date else None,
+            invoice_url=response.get("invoiceUrl"),
+            billing_type=response["billingType"],
+            external_reference=response.get("externalReference"),
         )
 
     async def create_customer(

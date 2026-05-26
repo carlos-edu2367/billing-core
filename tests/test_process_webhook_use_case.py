@@ -101,6 +101,23 @@ def make_payload():
     )
 
 
+def make_standalone_payment(provider_payment_id="pay-1"):
+    payment = Payment.create_standalone_payment(
+        description="Pedido 123",
+        gateway=GatewayProvider.ASAAS,
+        system_payment_id="order-123",
+        provider_payment_id=provider_payment_id,
+        value=Decimal("79.90"),
+        from_system=System.NEECTIFY_SHOP,
+        checkout_link="https://www.asaas.com/i/pay_123",
+        webhook_link="https://hooks.neectify.local/billing/payment",
+        due_date=datetime(2026, 6, 10, tzinfo=timezone.utc).date(),
+        external_reference="payment:neectify_shop:order-123",
+    )
+    payment.id = uuid4()
+    return payment
+
+
 @pytest.mark.asyncio
 async def test_process_webhook_creates_payment_and_marks_subscription_as_paid():
     subscription = make_subscription()
@@ -143,3 +160,62 @@ async def test_process_webhook_returns_none_for_already_processed_event():
     response = await service.execute(GatewayProvider.ASAAS, make_payload())
 
     assert response is None
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_marks_standalone_payment_as_paid():
+    payment = make_standalone_payment(provider_payment_id="pay-1")
+    service = ProcessWebhookService(
+        payment_repo=FakePaymentRepo(existing=payment),
+        sub_repo=FakeSubscriptionRepo(None),
+        uow=FakeUow(),
+        webhook_event_repo=FakeWebhookEventRepo(),
+    )
+    payload = WebhookPayload(
+        event=EventType.PAYMENT_RECEIVED,
+        source_event_id="evt-standalone-1",
+        details=Details(
+            id="pay-1",
+            subscription=None,
+            status="RECEIVED",
+            value=Decimal("79.90"),
+            net_value=Decimal("77.90"),
+            payment_date=datetime.now(timezone.utc),
+            external_reference="payment:neectify_shop:order-123",
+        ),
+    )
+
+    response = await service.execute(GatewayProvider.ASAAS, payload)
+
+    assert payment.payment_status == PaymentStatus.PAID
+    assert response.event.value == "PAYMENT_STATUS_UPDATED"
+    assert response.payment_id == payment.id
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_marks_standalone_payment_as_confirmed():
+    payment = make_standalone_payment(provider_payment_id="pay-1")
+    service = ProcessWebhookService(
+        payment_repo=FakePaymentRepo(existing=payment),
+        sub_repo=FakeSubscriptionRepo(None),
+        uow=FakeUow(),
+        webhook_event_repo=FakeWebhookEventRepo(),
+    )
+    payload = WebhookPayload(
+        event=EventType.PAYMENT_CONFIRMED,
+        source_event_id="evt-standalone-2",
+        details=Details(
+            id="pay-1",
+            subscription=None,
+            status="CONFIRMED",
+            value=Decimal("79.90"),
+            net_value=Decimal("77.90"),
+            payment_date=datetime.now(timezone.utc),
+            external_reference="payment:neectify_shop:order-123",
+        ),
+    )
+
+    response = await service.execute(GatewayProvider.ASAAS, payload)
+
+    assert payment.payment_status == PaymentStatus.CONFIRMED
+    assert response.event.value == "PAYMENT_STATUS_UPDATED"

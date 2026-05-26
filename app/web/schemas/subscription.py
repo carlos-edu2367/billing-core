@@ -28,15 +28,62 @@ class CreateSubscriptionRequest(BaseModel):
         },
     )
 
-    customer_provider_id: str = Field(..., min_length=1, max_length=128, description="Identificador do cliente no provedor.")
-    value: Decimal = Field(..., gt=0, description="Valor da assinatura.")
-    subscription_type: SubscriptionType = Field(..., description="Recorrencia da assinatura.")
-    next_due_date: date | None = Field(default=None, description="Proxima data de cobranca.")
-    description: str = Field(..., min_length=1, max_length=255, description="Descricao interna da assinatura.")
-    system: System = Field(..., description="Sistema Neectify de origem.")
-    system_sub_id: str = Field(..., min_length=1, max_length=128, description="Identificador da assinatura no sistema de origem.")
-    expires_at: datetime = Field(..., description="Data limite da assinatura.")
-    webhook_link: str = Field(..., max_length=2048, description="Webhook interno que recebera os eventos normalizados.")
+    customer_provider_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=128,
+        description="Identificador do cliente no gateway/provedor de pagamento.",
+        examples=["cus_123"],
+    )
+    value: Decimal = Field(
+        ...,
+        gt=0,
+        description="Valor da assinatura em moeda decimal. Exemplo: `129.90`.",
+        examples=["129.90"],
+    )
+    subscription_type: SubscriptionType = Field(
+        ...,
+        description="Periodicidade da cobrança recorrente.",
+        examples=["MONTHLY"],
+    )
+    next_due_date: date | None = Field(
+        default=None,
+        description="Próxima data de cobrança. Se enviada, não pode estar no passado.",
+        examples=["2026-05-01"],
+    )
+    description: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        description="Descrição funcional da assinatura, usada para rastreabilidade operacional.",
+        examples=["Plano Pro anualizado"],
+    )
+    system: System = Field(
+        ...,
+        description="Sistema interno de origem da requisição. Deve bater com o header `X-System`.",
+        examples=["NEECTIFY_SHOP"],
+    )
+    system_sub_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=128,
+        description="Identificador da assinatura no sistema de origem.",
+        examples=["sub_shop_001"],
+    )
+    expires_at: datetime = Field(
+        ...,
+        description="Data e hora limite da assinatura. Deve estar no futuro.",
+        examples=["2027-05-01T00:00:00Z"],
+    )
+    webhook_link: str = Field(
+        ...,
+        max_length=2048,
+        description=(
+            "Endpoint HTTPS interno que receberá callbacks normalizados do Billing Core. "
+            "O host precisa estar permitido em `ALLOWED_INTERNAL_WEBHOOK_HOSTS`."
+        ),
+        examples=["https://hooks.neectify.local/billing/subscription"],
+    )
 
     @field_validator("customer_provider_id", "description", "system_sub_id")
     @classmethod

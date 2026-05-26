@@ -14,6 +14,7 @@ from app.infra.observability import configure_logging, correlation_id_var, metri
 from app.web.errors import register_exception_handlers, register_request_too_large
 from app.web.routes.health import router as health_router
 from app.web.routes.jobs import router as jobs_router
+from app.web.routes.payments import router as payments_router
 from app.web.routes.subscriptions import router as subscriptions_router
 from app.web.routes.webhooks import router as webhooks_router
 
@@ -37,16 +38,36 @@ async def lifespan(app_: FastAPI):
 app = FastAPI(
     title="Billing Core API",
     version="1.0.0",
-    description="API do Billing Core para orquestracao de assinaturas e cobrancas da Neectify.",
+    description="""
+API do Billing Core para orquestração de assinaturas, webhooks e processamento assíncrono da Neectify.
+
+## Como navegar nesta documentação
+
+- Use `POST /v1/subscriptions` para solicitar a criação de uma assinatura.
+- Use `GET /v1/jobs/{job_id}` para acompanhar o processamento assíncrono.
+- Use `POST /v1/webhooks/asaas` para ingestão técnica de eventos do gateway.
+- Use `/health`, `/ready`, `/live` e `/metrics` para operação e observabilidade.
+
+## Autenticação interna
+
+Os endpoints internos usam os headers:
+- `X-System`
+- `X-API-Key`
+
+## Idempotência
+
+Operações críticas de escrita, como criação de assinatura, exigem `Idempotency-Key`.
+""",
     lifespan=lifespan,
     docs_url="/docs" if settings.ENABLE_API_DOCS else None,
     redoc_url="/redoc" if settings.ENABLE_API_DOCS else None,
     openapi_url="/openapi.json" if settings.ENABLE_API_DOCS else None,
     openapi_tags=[
-        {"name": "health", "description": "Endpoints operacionais da API."},
-        {"name": "subscriptions", "description": "Criacao e processamento de assinaturas."},
-        {"name": "jobs", "description": "Consulta de processamento assincrono."},
-        {"name": "webhooks", "description": "Recepcao de eventos de gateways externos."},
+        {"name": "health", "description": "Endpoints operacionais para health, readiness, liveness e métricas."},
+        {"name": "subscriptions", "description": "Fluxos de criação assíncrona de assinaturas com idempotência e autenticação interna."},
+        {"name": "payments", "description": "Fluxos de criacao e consulta local de pagamentos avulsos."},
+        {"name": "jobs", "description": "Consulta de jobs assíncronos gerados pelos fluxos de billing."},
+        {"name": "webhooks", "description": "Recepção técnica de eventos de gateways externos, com validação e replay protection."},
     ],
 )
 
@@ -125,6 +146,7 @@ register_exception_handlers(app)
 app.include_router(health_router)
 app.include_router(webhooks_router)
 app.include_router(subscriptions_router)
+app.include_router(payments_router)
 app.include_router(jobs_router)
 
 if __name__ == "__main__":

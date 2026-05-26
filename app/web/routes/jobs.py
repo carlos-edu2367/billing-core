@@ -14,7 +14,24 @@ router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
     "/{job_id}",
     response_model=JobStatusResponse,
     summary="Consultar job",
-    description="Consulta o status de um job associado ao sistema autenticado.",
+    description="""
+Consulta o status de um job pertencente ao sistema autenticado.
+
+### Quando usar
+- Após `POST /v1/subscriptions`
+- Após recebimento assíncrono de algum processo que retornou `job_id`
+
+### Estados possíveis
+- `queued`: job aceito e aguardando execução
+- `processing`: worker em execução
+- `retrying`: tentativa falhou e nova execução será feita
+- `completed`: job concluído
+- `failed`: job esgotou tentativas ou falhou definitivamente
+
+### Headers obrigatórios
+- `X-System`
+- `X-API-Key`
+""",
     responses=build_error_responses(401, 403, 404, 429, 500),
 )
 async def get_job_status(

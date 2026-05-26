@@ -27,12 +27,14 @@ O Billing Core foi estruturado em camadas para manter o dominio de billing separ
 
 - `CreateCustomer`
 - `CreateSubscription`
+- `CancelSubscription`
 - `ProcessWebhookService`
 
 ### Integrações
 
 - gateway atual: Asaas
 - webhook interno assinado para sistemas Neectify
+- contrato de gateway via `InterfaceGateway`, incluindo criacao, cancelamento e verificacao de status de assinatura
 
 ## Fluxo macro
 
@@ -43,6 +45,16 @@ O Billing Core foi estruturado em camadas para manter o dominio de billing separ
 5. O gateway cria a assinatura e o primeiro pagamento.
 6. O core persiste `Subscription` e `Payment`.
 7. O sistema consumidor acompanha o status por `GET /v1/jobs/{job_id}`.
+
+Fluxo de cancelamento:
+
+1. Um sistema interno chama `POST /v1/subscriptions/{subscription_id}/cancel`.
+2. A API valida autenticacao, escopo, ownership da assinatura e idempotencia.
+3. A requisicao vira job ARQ.
+4. O worker executa `CancelSubscription`.
+5. O core marca a assinatura como `cancellation_pending`.
+6. O adapter do gateway verifica o estado remoto e executa o cancelamento quando necessario.
+7. O core persiste o estado final `canceled` sem acoplar o dominio ao provider concreto.
 
 Fluxo de webhook:
 
@@ -65,7 +77,8 @@ Fluxo de webhook:
 
 - auth interna por API key + `X-System`
 - escopo por cliente interno em `INTERNAL_API_CLIENTS`
-- idempotencia de criacao de assinatura em Redis
+- idempotencia de criacao e cancelamento de assinatura em Redis
+- dedupe adicional de operacao externa em `gateway_operations`
 - metadata de job em Redis
 - logs estruturados em JSON
 

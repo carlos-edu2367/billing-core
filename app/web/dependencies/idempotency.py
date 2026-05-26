@@ -12,8 +12,19 @@ def build_request_hash(payload: dict) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
-async def start_idempotent_job(redis, system: System, idempotency_key: str, request_hash: str):
-    redis_key = f"billing_core:idempotency:subscription:{system.value}:{idempotency_key}"
+def _build_idempotency_key(namespace: str, system: System, idempotency_key: str) -> str:
+    normalized_namespace = (namespace or "subscription").strip() or "subscription"
+    return f"billing_core:idempotency:{normalized_namespace}:{system.value}:{idempotency_key}"
+
+
+async def start_idempotent_job(
+    redis,
+    system: System,
+    idempotency_key: str,
+    request_hash: str,
+    namespace: str = "subscription",
+):
+    redis_key = _build_idempotency_key(namespace, system, idempotency_key)
     placeholder = json.dumps(
         {
             "request_hash": request_hash,
@@ -54,8 +65,15 @@ async def start_idempotent_job(redis, system: System, idempotency_key: str, requ
     return record
 
 
-async def save_idempotent_job(redis, system: System, idempotency_key: str, request_hash: str, job_id: str):
-    redis_key = f"billing_core:idempotency:subscription:{system.value}:{idempotency_key}"
+async def save_idempotent_job(
+    redis,
+    system: System,
+    idempotency_key: str,
+    request_hash: str,
+    job_id: str,
+    namespace: str = "subscription",
+):
+    redis_key = _build_idempotency_key(namespace, system, idempotency_key)
     record = json.dumps(
         {
             "request_hash": request_hash,
@@ -65,6 +83,6 @@ async def save_idempotent_job(redis, system: System, idempotency_key: str, reque
     await redis.setex(redis_key, settings.SUBSCRIPTION_IDEMPOTENCY_TTL_SECONDS, record)
 
 
-async def clear_idempotent_job(redis, system: System, idempotency_key: str):
-    redis_key = f"billing_core:idempotency:subscription:{system.value}:{idempotency_key}"
+async def clear_idempotent_job(redis, system: System, idempotency_key: str, namespace: str = "subscription"):
+    redis_key = _build_idempotency_key(namespace, system, idempotency_key)
     await redis.delete(redis_key)

@@ -60,8 +60,18 @@
 - nao commitar valores reais em producao
 - separar credenciais por ambiente
 - rotacionar `ASAAS_API_TOKEN`, `ASAAS_WEBHOOK_SECRET` e API keys internas
+- manter `ASAAS_WEBHOOK_SECRET` e `INTERNAL_WEBHOOK_SIGNATURE` com pelo menos 32 caracteres e sem espacos
 - restringir acesso a `.env` somente ao runtime e CI autorizados
 - em producao, rejeitar placeholders e manter `ENABLE_API_DOCS=false`
+
+## Scopes internos
+
+- `subscriptions:create`
+- `subscriptions:cancel`
+- `payments:create`
+- `payments:read`
+- `jobs:read`
+- `metrics:read`
 
 ## Bootstrap recomendado
 

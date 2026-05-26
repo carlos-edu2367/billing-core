@@ -6,7 +6,14 @@ from arq.connections import RedisSettings
 
 from app.infra.config import settings
 from app.infra.observability import configure_logging, correlation_id_var, metrics
-from .tasks import create_subscription_worker, process_webhook, send_internal_webhook
+from .tasks import (
+    cancel_subscription_worker,
+    create_payment_worker,
+    create_subscription_worker,
+    process_webhook,
+    reconcile_pending_payment_worker,
+    send_internal_webhook,
+)
 
 
 configure_logging(settings.LOG_LEVEL)
@@ -60,6 +67,27 @@ def get_worker() -> Worker:
             func(
                 create_subscription_worker,
                 name="workers:tasks.create_subscription_worker",
+                keep_result=settings.WORKER_KEEP_RESULT_SECONDS,
+                timeout=settings.WORKER_JOB_TIMEOUT_SECONDS,
+                max_tries=settings.WORKER_MAX_TRIES,
+            ),
+            func(
+                cancel_subscription_worker,
+                name="workers:tasks.cancel_subscription_worker",
+                keep_result=settings.WORKER_KEEP_RESULT_SECONDS,
+                timeout=settings.WORKER_JOB_TIMEOUT_SECONDS,
+                max_tries=settings.WORKER_MAX_TRIES,
+            ),
+            func(
+                create_payment_worker,
+                name="workers:tasks.create_payment_worker",
+                keep_result=settings.WORKER_KEEP_RESULT_SECONDS,
+                timeout=settings.WORKER_JOB_TIMEOUT_SECONDS,
+                max_tries=settings.WORKER_MAX_TRIES,
+            ),
+            func(
+                reconcile_pending_payment_worker,
+                name="workers:tasks.reconcile_pending_payment_worker",
                 keep_result=settings.WORKER_KEEP_RESULT_SECONDS,
                 timeout=settings.WORKER_JOB_TIMEOUT_SECONDS,
                 max_tries=settings.WORKER_MAX_TRIES,

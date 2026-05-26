@@ -22,7 +22,7 @@ class InternalWebhookDeliveryModel(Base):
     event_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     target_url: Mapped[str] = mapped_column(String, nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
-    subscription_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("subscriptions.id"), nullable=False, index=True)
+    subscription_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("subscriptions.id"), nullable=True, index=True)
     payment_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("payments.id"), nullable=True, index=True)
     status: Mapped[InternalWebhookDeliveryStatus] = mapped_column(EnumValueType(InternalWebhookDeliveryStatus), nullable=False, index=True)
     attempt_count: Mapped[int] = mapped_column(nullable=False, default=0)
