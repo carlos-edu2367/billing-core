@@ -1,7 +1,7 @@
 """payments flow
 
 Revision ID: 20260526_000001
-Revises: 20260424_000004
+Revises: 20260424_000004_fields
 Create Date: 2026-05-26 00:00:01
 """
 
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision: str = "20260526_000001"
-down_revision: Union[str, None] = "20260424_000004"
+down_revision: Union[str, None] = "20260424_000004_fields"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

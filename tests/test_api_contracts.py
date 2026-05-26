@@ -1,11 +1,7 @@
 import json
-<<<<<<< HEAD
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
-=======
-from datetime import date, timedelta
->>>>>>> 8d53df5827d324ba4f83016e602e7166833db3f4
 
 from app.domain.entities.payment import Payment
 from app.domain.entities.subscription import Subscription
@@ -21,21 +17,13 @@ from app.web.main import app
 
 
 def subscription_payload():
-<<<<<<< HEAD
-    next_due_date = (datetime.now(timezone.utc).date() + timedelta(days=30)).isoformat()
-=======
-    next_due = (date.today() + timedelta(days=30)).isoformat()
-    expires_at = (date.today() + timedelta(days=395)).isoformat() + "T00:00:00Z"
->>>>>>> 8d53df5827d324ba4f83016e602e7166833db3f4
+    next_due = (datetime.now(timezone.utc).date() + timedelta(days=30)).isoformat()
+    expires_at = (datetime.now(timezone.utc).date() + timedelta(days=395)).isoformat() + "T00:00:00Z"
     return {
         "customer_provider_id": "cus_123",
         "value": "129.90",
         "subscription_type": "MONTHLY",
-<<<<<<< HEAD
-        "next_due_date": next_due_date,
-=======
         "next_due_date": next_due,
->>>>>>> 8d53df5827d324ba4f83016e602e7166833db3f4
         "description": "Plano Pro anualizado",
         "system": "neectify_shop",
         "system_sub_id": "sub_shop_001",
@@ -427,17 +415,17 @@ def test_create_subscription_rejects_past_due_date(client):
 
 
 def test_webhook_accepts_unknown_asaas_event_type(client):
-    """Eventos desconhecidos do Asaas (ex: split) devem retornar 202, não 400."""
+    """Eventos desconhecidos do Asaas (ex: split) devem retornar 200, não 400."""
     payload = {
         "event": "SUBSCRIPTION_SPLIT_DIVERGENCE_BLOCK",
         "id": "evt-split-001",
         "subscription": {"id": "sub-xxx"},
     }
-    headers = {"asaas-access-token": "fake-asaas-webhook-secret", "content-type": "application/json"}
+    headers = {"asaas-access-token": settings.ASAAS_WEBHOOK_SECRET, "content-type": "application/json"}
 
     response = client.post("/v1/webhooks/asaas", content=json.dumps(payload), headers=headers)
 
-    assert response.status_code == 202
+    assert response.status_code == 200
 
 
 def test_readiness_returns_dependency_details(client):

@@ -39,10 +39,13 @@ class ProcessWebhookService():
                 payload=payload.model_dump(mode="json"),
             )
 
-<<<<<<< HEAD
         if payload.details.id and not payload.details.subscription:
             payment = await self.payment_repo.get_by_provider_id(payload.details.id)
             if payment is None:
+                logger.warning(
+                    "Pagamento avulso nao encontrado para processamento",
+                    extra={"event_id": event_id, "payment_id": payload.details.id},
+                )
                 event.mark_as_processed()
                 await self.webhook_event_repo.save(event)
                 await self.uow.commit()
@@ -70,7 +73,7 @@ class ProcessWebhookService():
                 payment_id=payment.id,
                 subscription_id=None,
             )
-=======
+
         if payload.event in (
             EventType.UNKNOWN,
             EventType.PAYMENT_OVERDUE,
@@ -95,7 +98,6 @@ class ProcessWebhookService():
             await self.webhook_event_repo.save(event)
             await self.uow.commit()
             return None
->>>>>>> 8d53df5827d324ba4f83016e602e7166833db3f4
 
         if payload.event == EventType.PAYMENT_RECEIVED and payload.details.subscription:
             sub = await self.sub_repo.get_by_provider_id(payload.details.subscription)

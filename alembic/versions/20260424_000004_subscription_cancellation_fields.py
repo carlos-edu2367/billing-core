@@ -1,7 +1,7 @@
 """subscription cancellation tracking fields
 
-Revision ID: 20260424_000004
-Revises: 20260424_000003
+Revision ID: 20260424_000004_fields
+Revises: 20260424_000004
 Create Date: 2026-04-24 00:00:04
 """
 
@@ -11,8 +11,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = "20260424_000004"
-down_revision: Union[str, None] = "20260424_000003"
+revision: str = "20260424_000004_fields"
+down_revision: Union[str, None] = "20260424_000004"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

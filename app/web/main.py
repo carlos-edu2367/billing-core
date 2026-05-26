@@ -64,19 +64,12 @@ Operações críticas de escrita, como criação de assinatura, exigem `Idempote
     redoc_url="/redoc" if settings.ENABLE_API_DOCS else None,
     openapi_url="/openapi.json" if settings.ENABLE_API_DOCS else None,
     openapi_tags=[
-<<<<<<< HEAD
         {"name": "health", "description": "Endpoints operacionais para health, readiness, liveness e métricas."},
+        {"name": "customers", "description": "Cadastro de clientes no provedor de pagamento."},
         {"name": "subscriptions", "description": "Fluxos de criação assíncrona de assinaturas com idempotência e autenticação interna."},
         {"name": "payments", "description": "Fluxos de criacao e consulta local de pagamentos avulsos."},
         {"name": "jobs", "description": "Consulta de jobs assíncronos gerados pelos fluxos de billing."},
         {"name": "webhooks", "description": "Recepção técnica de eventos de gateways externos, com validação e replay protection."},
-=======
-        {"name": "health", "description": "Endpoints operacionais da API."},
-        {"name": "customers", "description": "Cadastro de clientes no provedor de pagamento."},
-        {"name": "subscriptions", "description": "Criacao e processamento de assinaturas."},
-        {"name": "jobs", "description": "Consulta de processamento assincrono."},
-        {"name": "webhooks", "description": "Recepcao de eventos de gateways externos."},
->>>>>>> 8d53df5827d324ba4f83016e602e7166833db3f4
     ],
 )
 

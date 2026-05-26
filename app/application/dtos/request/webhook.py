@@ -7,12 +7,8 @@ from pydantic import BaseModel, ConfigDict, field_validator
 from app.domain.enums.gateway_provider import GatewayProvider
 
 
-<<<<<<< HEAD
-class EventType(Enum):
-    PAYMENT_CONFIRMED = "PAYMENT_CONFIRMED"
-=======
 class EventType(str, Enum):
->>>>>>> 8d53df5827d324ba4f83016e602e7166833db3f4
+    PAYMENT_CONFIRMED = "PAYMENT_CONFIRMED"
     PAYMENT_RECEIVED = "PAYMENT_RECEIVED"
     PAYMENT_OVERDUE = "PAYMENT_OVERDUE"
     PAYMENT_REFUNDED = "PAYMENT_REFUNDED"
