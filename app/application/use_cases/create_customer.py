@@ -2,7 +2,7 @@ from app.application.repositories.customer_repo import Customer, CustomerReposit
 from app.application.dtos.request.customer import CreateCustomerDTO
 from app.application.interfaces.gateway_provider import GetGateway
 from app.application.interfaces.uow_provider import UowProvider
-from app.domain.errors import DomainError
+from app.domain.errors import DomainError, NotFoundError
 from app.domain.enums.gateway_provider import GatewayProvider
 from app.domain.enums.system import System
 from app.domain.value_objects.cnpj import CNPJ
@@ -27,15 +27,21 @@ class CreateCustomer():
         else:
             raise DomainError("É necessário cpf ou cnpj")
         
-        cus = Customer(
-            nome=dtos.nome_completo,
-            email=email,
-            cpf=cpf,
-            cnpj=cnpj,
-            system=system,
-            system_customer_id=dtos.system_customer_id,
-            gateway_provider=gateway_provider,
-        )
+        try:
+            existing = await self.repo.get_by_system_id_and_system(dtos.system_customer_id, system)
+            if existing.has_provider_binding():
+                return existing.provider_customer_id
+            cus = existing
+        except NotFoundError:
+            cus = Customer(
+                nome=dtos.nome_completo,
+                email=email,
+                cpf=cpf,
+                cnpj=cnpj,
+                system=system,
+                system_customer_id=dtos.system_customer_id,
+                gateway_provider=gateway_provider,
+            )
 
         response = await gateway.create_customer(
             name=cus.nome,
@@ -44,8 +50,15 @@ class CreateCustomer():
             external_reference=cus.system_customer_id
         )
 
-        cus.bind_provider_customer(response.cus_id)
-        await self.repo.save(cus)
-        await self.uow.commit()
+        from sqlalchemy.exc import IntegrityError
+
+        try:
+            cus.bind_provider_customer(response.cus_id)
+            await self.repo.save(cus)
+            await self.uow.commit()
+        except IntegrityError:
+            await self.uow.rollback()
+            existing = await self.repo.get_by_system_id_and_system(dtos.system_customer_id, system)
+            return existing.provider_customer_id
 
         return response.cus_id

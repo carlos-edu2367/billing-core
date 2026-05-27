@@ -14,9 +14,16 @@ from app.infra.interfaces.asaas_provider import AsaasAPIError
 from app.application.use_cases.create_subscription import CreateSubscription
 from app.application.use_cases.reconcile_payment import ReconcilePayment
 from app.domain.entities.internal_webhook_delivery import InternalWebhookDelivery
+from app.domain.entities.subscription import Subscription, SubscriptionStatus
+from app.domain.enums.gateway_operation_status import GatewayOperationStatus
 from app.domain.errors import DomainError, NotFoundError
 from app.domain.enums.gateway_provider import GatewayProvider
 from app.domain.enums.payment_status import PaymentStatus
+from app.domain.enums.system import System
+from app.domain.enums.subscription_type import SubscriptionType
+from app.domain.enums.payment_type import PaymentType
+from app.infra.db.models.gateway_operation import GatewayOperationModel
+from decimal import Decimal
 from app.infra.config import settings
 from app.infra.db.setup import AsyncSessionLocal
 from app.infra.jobs import register_dead_letter, update_job_metadata
@@ -287,21 +294,41 @@ async def create_subscription_worker(ctx, dto_dict: dict, customer_provider_id: 
         ctx["logger"].warning("Subscription rejected", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
         return {"status": "failed", "error": str(exc)}
     except AsaasAPIError as exc:
-        await update_job_metadata(
-            ctx["redis"],
-            job_id,
-            status="failed",
-            attempt=job_try,
-            finished_at=datetime.now(timezone.utc),
-            error_code=f"AsaasAPIError_{exc.status_code}",
-            error_message=exc.body[:500],
-        )
-        await register_dead_letter(ctx["redis"], "create_subscription_worker", job_id)
-        ctx["logger"].error(
-            "Subscription creation failed — Asaas returned error",
-            extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
-        )
-        return {"status": "failed", "error": str(exc)}
+        is_client_error = 400 <= exc.status_code < 500
+        if is_client_error:
+            await update_job_metadata(
+                ctx["redis"],
+                job_id,
+                status="failed",
+                attempt=job_try,
+                finished_at=datetime.now(timezone.utc),
+                error_code=f"AsaasAPIError_{exc.status_code}",
+                error_message=exc.body[:500],
+            )
+            await register_dead_letter(ctx["redis"], "create_subscription_worker", job_id)
+            ctx["logger"].error(
+                "Subscription creation failed terminally — Asaas returned client error",
+                extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
+            )
+            return {"status": "failed", "error": str(exc)}
+        else:
+            is_final_try = job_try >= settings.WORKER_MAX_TRIES
+            await update_job_metadata(
+                ctx["redis"],
+                job_id,
+                status="failed" if is_final_try else "retrying",
+                attempt=job_try,
+                finished_at=datetime.now(timezone.utc) if is_final_try else None,
+                error_code=f"AsaasAPIError_{exc.status_code}",
+                error_message=exc.body[:500],
+            )
+            if is_final_try:
+                await register_dead_letter(ctx["redis"], "create_subscription_worker", job_id)
+            ctx["logger"].warning(
+                "Subscription creation transient failure — Asaas returned server error, retry scheduled",
+                extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
+            )
+            raise
     except Exception as e:
         is_final_try = job_try >= settings.WORKER_MAX_TRIES
         await update_job_metadata(
@@ -401,27 +428,46 @@ async def create_payment_worker(ctx, dto_dict: dict, customer_provider_id: str, 
         # inexistente, etc.) — não há ponto em retentar sem intervenção manual.
         # O body completo já foi logado em asaas_provider._handle_error.
         is_client_error = 400 <= exc.status_code < 500
-        await update_job_metadata(
-            ctx["redis"],
-            job_id,
-            status="failed",
-            attempt=job_try,
-            finished_at=datetime.now(timezone.utc),
-            error_code=f"AsaasAPIError_{exc.status_code}",
-            error_message=exc.body[:500],
-        )
-        await register_dead_letter(ctx["redis"], "create_payment_worker", job_id)
-        ctx["logger"].error(
-            "Payment creation failed — Asaas returned error",
-            extra={
-                "job_id": job_id,
-                "job_try": job_try,
-                "asaas_status": exc.status_code,
-                "asaas_body": exc.body,
-                "terminal": is_client_error,
-            },
-        )
-        return {"status": "failed", "error": str(exc)}
+        if is_client_error:
+            await update_job_metadata(
+                ctx["redis"],
+                job_id,
+                status="failed",
+                attempt=job_try,
+                finished_at=datetime.now(timezone.utc),
+                error_code=f"AsaasAPIError_{exc.status_code}",
+                error_message=exc.body[:500],
+            )
+            await register_dead_letter(ctx["redis"], "create_payment_worker", job_id)
+            ctx["logger"].error(
+                "Payment creation failed terminally — Asaas returned client error",
+                extra={
+                    "job_id": job_id,
+                    "job_try": job_try,
+                    "asaas_status": exc.status_code,
+                    "asaas_body": exc.body,
+                    "terminal": is_client_error,
+                },
+            )
+            return {"status": "failed", "error": str(exc)}
+        else:
+            is_final_try = job_try >= settings.WORKER_MAX_TRIES
+            await update_job_metadata(
+                ctx["redis"],
+                job_id,
+                status="failed" if is_final_try else "retrying",
+                attempt=job_try,
+                finished_at=datetime.now(timezone.utc) if is_final_try else None,
+                error_code=f"AsaasAPIError_{exc.status_code}",
+                error_message=exc.body[:500],
+            )
+            if is_final_try:
+                await register_dead_letter(ctx["redis"], "create_payment_worker", job_id)
+            ctx["logger"].warning(
+                "Payment creation transient failure — Asaas returned server error, retry scheduled",
+                extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
+            )
+            raise
     except Exception as exc:
         is_final_try = job_try >= settings.WORKER_MAX_TRIES
         await update_job_metadata(
@@ -493,27 +539,46 @@ async def create_payment_link_worker(ctx, dto_dict: dict, gateway_provider_str: 
         return {"status": "failed", "error": str(exc)}
     except AsaasAPIError as exc:
         is_client_error = 400 <= exc.status_code < 500
-        await update_job_metadata(
-            ctx["redis"],
-            job_id,
-            status="failed",
-            attempt=job_try,
-            finished_at=datetime.now(timezone.utc),
-            error_code=f"AsaasAPIError_{exc.status_code}",
-            error_message=exc.body[:500],
-        )
-        await register_dead_letter(ctx["redis"], "create_payment_link_worker", job_id)
-        ctx["logger"].error(
-            "Payment link creation failed - Asaas returned error",
-            extra={
-                "job_id": job_id,
-                "job_try": job_try,
-                "asaas_status": exc.status_code,
-                "asaas_body": exc.body,
-                "terminal": is_client_error,
-            },
-        )
-        return {"status": "failed", "error": str(exc)}
+        if is_client_error:
+            await update_job_metadata(
+                ctx["redis"],
+                job_id,
+                status="failed",
+                attempt=job_try,
+                finished_at=datetime.now(timezone.utc),
+                error_code=f"AsaasAPIError_{exc.status_code}",
+                error_message=exc.body[:500],
+            )
+            await register_dead_letter(ctx["redis"], "create_payment_link_worker", job_id)
+            ctx["logger"].error(
+                "Payment link creation failed terminally - Asaas returned client error",
+                extra={
+                    "job_id": job_id,
+                    "job_try": job_try,
+                    "asaas_status": exc.status_code,
+                    "asaas_body": exc.body,
+                    "terminal": is_client_error,
+                },
+            )
+            return {"status": "failed", "error": str(exc)}
+        else:
+            is_final_try = job_try >= settings.WORKER_MAX_TRIES
+            await update_job_metadata(
+                ctx["redis"],
+                job_id,
+                status="failed" if is_final_try else "retrying",
+                attempt=job_try,
+                finished_at=datetime.now(timezone.utc) if is_final_try else None,
+                error_code=f"AsaasAPIError_{exc.status_code}",
+                error_message=exc.body[:500],
+            )
+            if is_final_try:
+                await register_dead_letter(ctx["redis"], "create_payment_link_worker", job_id)
+            ctx["logger"].warning(
+                "Payment link creation transient failure - Asaas returned server error, retry scheduled",
+                extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
+            )
+            raise
     except Exception as exc:
         is_final_try = job_try >= settings.WORKER_MAX_TRIES
         await update_job_metadata(
@@ -678,21 +743,41 @@ async def cancel_subscription_worker(ctx, dto_dict: dict):
         )
         return {"status": "failed", "error": str(exc)}
     except AsaasAPIError as exc:
-        await update_job_metadata(
-            ctx["redis"],
-            job_id,
-            status="failed",
-            attempt=job_try,
-            finished_at=datetime.now(timezone.utc),
-            error_code=f"AsaasAPIError_{exc.status_code}",
-            error_message=exc.body[:500],
-        )
-        await register_dead_letter(ctx["redis"], "cancel_subscription_worker", job_id)
-        ctx["logger"].error(
-            "Subscription cancellation failed — Asaas returned error",
-            extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
-        )
-        return {"status": "failed", "error": str(exc)}
+        is_client_error = 400 <= exc.status_code < 500
+        if is_client_error:
+            await update_job_metadata(
+                ctx["redis"],
+                job_id,
+                status="failed",
+                attempt=job_try,
+                finished_at=datetime.now(timezone.utc),
+                error_code=f"AsaasAPIError_{exc.status_code}",
+                error_message=exc.body[:500],
+            )
+            await register_dead_letter(ctx["redis"], "cancel_subscription_worker", job_id)
+            ctx["logger"].error(
+                "Subscription cancellation failed terminally — Asaas returned client error",
+                extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
+            )
+            return {"status": "failed", "error": str(exc)}
+        else:
+            is_final_try = job_try >= settings.WORKER_MAX_TRIES
+            await update_job_metadata(
+                ctx["redis"],
+                job_id,
+                status="failed" if is_final_try else "retrying",
+                attempt=job_try,
+                finished_at=datetime.now(timezone.utc) if is_final_try else None,
+                error_code=f"AsaasAPIError_{exc.status_code}",
+                error_message=exc.body[:500],
+            )
+            if is_final_try:
+                await register_dead_letter(ctx["redis"], "cancel_subscription_worker", job_id)
+            ctx["logger"].warning(
+                "Subscription cancellation transient failure — Asaas returned server error, retry scheduled",
+                extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
+            )
+            raise
     except Exception as exc:
         is_final_try = job_try >= settings.WORKER_MAX_TRIES
         await update_job_metadata(
@@ -818,3 +903,119 @@ async def send_internal_webhook(ctx, delivery_id: str):
             await register_dead_letter(ctx["redis"], "send_internal_webhook", job_id)
         ctx["logger"].error("Internal webhook delivery failed", extra={"job_id": job_id, "delivery_id": delivery_id, "job_try": job_try, "error": str(exc)})
         raise
+
+
+async def reconcile_gateway_operations_worker(ctx):
+    """Worker periódico que varre gateway_operations em REQUIRES_RECONCILIATION e as resolve."""
+    ctx["logger"].info("Starting gateway operations reconciliation...")
+    
+    # 1. Distributed lock to avoid multi-worker concurrent reconciliation runs
+    lock_key = "billing_core:reconcile_worker_lock"
+    lock_acquired = await ctx["redis"].set(
+        lock_key,
+        "locked",
+        ex=840,  # 14 minutes (slightly less than the 15-minute cron interval)
+        nx=True,
+    )
+    if not lock_acquired:
+        ctx["logger"].info("Reconciliation worker lock is already held. Skipping execution.")
+        return {"status": "skipped", "reason": "lock_held"}
+
+    try:
+        async with AsyncSessionLocal() as session:
+            op_repo = GatewayOperationRepositoryINFRA(session)
+            operations = await op_repo.list_by_status(GatewayOperationStatus.REQUIRES_RECONCILIATION)
+            op_ids = [op.id for op in operations]
+
+        for op_id in op_ids:
+            async with AsyncSessionLocal() as session:
+                uow = UowProvider(session)
+                op_repo = GatewayOperationRepositoryINFRA(session)
+                sub_repo = SubscriptionRepositoryINFRA(session)
+                payment_repo = PaymentRepositoryINFRA(session)
+                get_gateway = GetGatewayInfra()
+
+                try:
+                    async with session.begin():
+                        # SELECT FOR UPDATE on GatewayOperation to lock row
+                        record = await session.get(GatewayOperationModel, op_id, with_for_update=True)
+                        if not record or record.status != GatewayOperationStatus.REQUIRES_RECONCILIATION.value:
+                            continue
+
+                        op = record.to_domain()
+                        gateway = get_gateway.get(op.provider)
+
+                        if op.operation_name == "create_subscription":
+                            status_response = await gateway.verify_status(op.gateway_reference)
+                            
+                            status_str = status_response.status.upper()
+                            if status_response.deleted or status_str in {"INACTIVE", "CANCELED", "CANCELLED", "DELETED"}:
+                                local_status = SubscriptionStatus.CANCELED
+                            elif status_str == "ACTIVE":
+                                local_status = SubscriptionStatus.ACTIVE
+                            else:
+                                local_status = SubscriptionStatus.PENDING
+
+                            try:
+                                sub = await sub_repo.get_by_provider_id_for_update(op.gateway_reference)
+                            except NotFoundError:
+                                sub = Subscription(
+                                    initial_date=op.created_at,
+                                    description=op.request_payload.get("description", ""),
+                                    system_subscription_id=op.request_payload["system_sub_id"],
+                                    gateway_subscription_id=op.gateway_reference,
+                                    gateway_provider=op.provider,
+                                    status=local_status,
+                                    last_paid_date=None,
+                                    from_system=System(op.system) if isinstance(op.system, str) else op.system,
+                                    subscription_type=SubscriptionType(op.request_payload["subscription_type"]) if isinstance(op.request_payload["subscription_type"], str) else op.request_payload["subscription_type"],
+                                    expires_at=datetime.fromisoformat(op.request_payload["expires_at"]) if op.request_payload.get("expires_at") else None,
+                                    next_due_date=datetime.fromisoformat(op.request_payload["next_due_date"]) if op.request_payload.get("next_due_date") else None,
+                                    value=Decimal(str(op.request_payload["value"])),
+                                    webhook_link=op.request_payload.get("webhook_link"),
+                                )
+                                sub = await sub_repo.save(sub)
+
+                            payments = await gateway.get_subscription_payment(op.gateway_reference)
+                            for pay_info in payments:
+                                try:
+                                    await payment_repo.get_by_provider_id(pay_info.payment_id)
+                                except NotFoundError:
+                                    billing_type_val = getattr(pay_info, "billing_type", "CREDIT_CARD") or "CREDIT_CARD"
+                                    try:
+                                        p_type = PaymentType[billing_type_val.upper()]
+                                    except KeyError:
+                                        p_type = PaymentType.CREDIT_CARD
+
+                                    payment = Payment.create_subscription_payment(
+                                        description=f"Pagamento relacionado a assinatura: {sub.description}",
+                                        gateway=sub.gateway_provider,
+                                        system_payment_id=f"{sub.system_subscription_id}:{pay_info.payment_id}",
+                                        provider_payment_id=pay_info.payment_id,
+                                        value=pay_info.value,
+                                        from_system=sub.from_system,
+                                        subscription_id=sub.id,
+                                        checkout_link=pay_info.invoice_url,
+                                        payment_type=p_type,
+                                    )
+                                    await payment_repo.save(payment)
+
+                            op.mark_completed(gateway_reference=op.gateway_reference)
+                            await op_repo.save(op)
+                            ctx["logger"].info(f"Reconciled create_subscription for {op.gateway_reference}")
+
+                        elif op.operation_name == "cancel_subscription":
+                            status_response = await gateway.verify_status(op.gateway_reference)
+                            if status_response.deleted or status_response.status.lower() in {"inactive", "canceled", "cancelled", "deleted"}:
+                                sub_id = op.request_payload["subscription_id"]
+                                sub = await sub_repo.get_by_id_for_update(UUID(sub_id))
+                                if sub.status != SubscriptionStatus.CANCELED:
+                                    sub.cancel(reason="Reconciled cancellation", cancelled_at=datetime.now(timezone.utc))
+                                    await sub_repo.save(sub)
+                                op.mark_completed(gateway_reference=op.gateway_reference)
+                                await op_repo.save(op)
+                                ctx["logger"].info(f"Reconciled cancel_subscription for {op.gateway_reference}")
+                except Exception as e:
+                    ctx["logger"].error(f"Failed to reconcile operation {op_id}: {str(e)}")
+    finally:
+        await ctx["redis"].delete(lock_key)

@@ -13,6 +13,7 @@ from app.domain.errors import DomainError
 from app.domain.enums.gateway_provider import GatewayProvider
 from app.domain.enums.payment_status import PaymentStatus
 from app.domain.enums.subscription_status import SubscriptionStatus
+from app.domain.enums.payment_type import PaymentType
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ class ProcessWebhookService():
             return None
 
         if payload.event == EventType.PAYMENT_RECEIVED and payload.details.subscription:
-            sub = await self.sub_repo.get_by_provider_id(payload.details.subscription)
+            sub = await self.sub_repo.get_by_provider_id_for_update(payload.details.subscription)
             payment = await self.payment_repo.get_by_provider_id(payload.details.id)
 
             if payment and payment.payment_status == PaymentStatus.PAID:
@@ -119,6 +120,12 @@ class ProcessWebhookService():
                 )
 
             if payment is None:
+                billing_type_val = payload.details.billing_type or "CREDIT_CARD"
+                try:
+                    p_type = PaymentType[billing_type_val.upper()]
+                except KeyError:
+                    p_type = PaymentType.CREDIT_CARD
+
                 payment = Payment.create_subscription_payment(
                     description=f"Pagamento relacionado à assinatura: {sub.description}",
                     gateway=sub.gateway_provider,
@@ -127,6 +134,7 @@ class ProcessWebhookService():
                     value=payload.details.value or sub.value,
                     from_system=sub.from_system,
                     subscription_id=sub.id,
+                    payment_type=p_type,
                 )
 
             payment_date = payload.details.payment_date or payment.paid_date
@@ -135,10 +143,13 @@ class ProcessWebhookService():
 
             payment.mark_as_paid(payment_date=payment_date, net_value=payload.details.net_value)
 
+            sub_updated = False
             if sub.last_paid_date != payment_date:
                 sub.mark_as_paid(payment_date=payment_date)
+                sub_updated = True
 
-            sub = await self.sub_repo.save(sub)
+            if sub_updated:
+                sub = await self.sub_repo.save(sub)
             payment = await self.payment_repo.save(payment)
             event.mark_as_processed()
             await self.webhook_event_repo.save(event)
@@ -149,6 +160,74 @@ class ProcessWebhookService():
                 payment_id=payment.id,
                 subscription_id=sub.id,
             )
+
+        if payload.event == EventType.PAYMENT_CONFIRMED and payload.details.subscription:
+            sub = await self.sub_repo.get_by_provider_id_for_update(payload.details.subscription)
+            payment = await self.payment_repo.get_by_provider_id(payload.details.id)
+
+            if payment is None:
+                billing_type_val = payload.details.billing_type or "CREDIT_CARD"
+                try:
+                    p_type = PaymentType[billing_type_val.upper()]
+                except KeyError:
+                    p_type = PaymentType.CREDIT_CARD
+
+                payment = Payment.create_subscription_payment(
+                    description=f"Pagamento relacionado à assinatura: {sub.description}",
+                    gateway=sub.gateway_provider,
+                    system_payment_id=f"{sub.system_subscription_id}:{payload.details.id}",
+                    provider_payment_id=payload.details.id,
+                    value=payload.details.value or sub.value,
+                    from_system=sub.from_system,
+                    subscription_id=sub.id,
+                    payment_type=p_type,
+                )
+
+            payment_date = payload.details.payment_date or payment.paid_date
+            if payment_date is None:
+                raise DomainError("Webhook de pagamento confirmado sem data de pagamento.")
+
+            changed = apply_gateway_payment_status(
+                payment,
+                "CONFIRMED",
+                payment_date,
+                payload.details.net_value,
+            )
+
+            is_credit_card = payment.payment_type == PaymentType.CREDIT_CARD
+            sub_updated = False
+            if is_credit_card and sub.last_paid_date != payment_date:
+                sub.mark_as_paid(payment_date=payment_date)
+                sub_updated = True
+
+            if sub_updated:
+                sub = await self.sub_repo.save(sub)
+
+            if changed or sub_updated:
+                payment = await self.payment_repo.save(payment)
+
+            event.mark_as_processed()
+            await self.webhook_event_repo.save(event)
+            await self.uow.commit()
+
+            return ProcessWebhookResponse(
+                event=InternalEventType.PAYMENT_RECEIVED if is_credit_card else InternalEventType.PAYMENT_STATUS_UPDATED,
+                payment_id=payment.id,
+                subscription_id=sub.id,
+            )
+
+        if payload.event == EventType.PAYMENT_DELETED and payload.details.subscription:
+            payment = await self.payment_repo.get_by_provider_id(payload.details.id)
+
+            if payment and payment.payment_status in {PaymentStatus.PENDING, PaymentStatus.OVERDUE, PaymentStatus.CONFIRMED}:
+                payment.mark_as_canceled()
+                await self.payment_repo.save(payment)
+
+            event.mark_as_processed()
+            await self.webhook_event_repo.save(event)
+            await self.uow.commit()
+
+            return None
 
         if payload.event in [EventType.SUBSCRIPTION_DELETED, EventType.SUBSCRIPTION_INACTIVATED]:
             if not payload.details.subscription:

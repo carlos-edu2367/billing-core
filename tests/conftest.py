@@ -1,3 +1,7 @@
+import os
+os.environ["ASAAS_WEBHOOK_SECRET"] = "fake-asaas-webhook-secret-long-enough-32-chars"
+os.environ["INTERNAL_WEBHOOK_SIGNATURE"] = "test-webhook-signature-for-dev-only-32-chars"
+
 from collections import defaultdict
 
 import pytest
@@ -75,7 +79,7 @@ class FakeRedis:
 
 
 @pytest.fixture(autouse=True)
-def fake_internal_clients():
+def fake_internal_clients(monkeypatch):
     original = settings.INTERNAL_API_CLIENTS
     original_webhook_secret = settings.ASAAS_WEBHOOK_SECRET
     original_allowed_hosts = settings.ALLOWED_INTERNAL_WEBHOOK_HOSTS
@@ -95,6 +99,14 @@ def fake_internal_clients():
     }
     settings.ASAAS_WEBHOOK_SECRET = "fake-asaas-webhook-secret-with-32-chars"
     settings.ALLOWED_INTERNAL_WEBHOOK_HOSTS = ["hooks.neectify.local"]
+
+    import arq
+    import app.web.main as web_main
+    async def fake_create_pool(*args, **kwargs):
+        return FakeRedis()
+    monkeypatch.setattr(arq, "create_pool", fake_create_pool)
+    monkeypatch.setattr(web_main, "create_pool", fake_create_pool)
+
     yield
     settings.INTERNAL_API_CLIENTS = original
     settings.ASAAS_WEBHOOK_SECRET = original_webhook_secret
@@ -107,7 +119,14 @@ def fake_redis():
 
 
 @pytest.fixture
-def client(fake_redis):
+def client(fake_redis, monkeypatch):
+    import arq
+    import app.web.main as web_main
+    async def fake_create_pool(*args, **kwargs):
+        return fake_redis
+    monkeypatch.setattr(arq, "create_pool", fake_create_pool)
+    monkeypatch.setattr(web_main, "create_pool", fake_create_pool)
+
     with TestClient(app) as test_client:
         app.state.redis_pool = fake_redis
         yield test_client

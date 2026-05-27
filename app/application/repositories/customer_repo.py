@@ -18,5 +18,9 @@ class CustomerRepository(ABC):
         pass
 
     @abstractmethod
+    async def get_by_system_id_and_system(self, system_id: str, system: System) -> Customer:
+        pass
+
+    @abstractmethod
     async def save(self, customer: Customer) -> Customer:
         pass

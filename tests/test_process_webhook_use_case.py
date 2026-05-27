@@ -14,6 +14,7 @@ from app.domain.enums.payment_status import PaymentStatus
 from app.domain.enums.subscription_status import SubscriptionStatus
 from app.domain.enums.subscription_type import SubscriptionType
 from app.domain.enums.system import System
+from app.domain.enums.payment_type import PaymentType
 
 
 def make_details(*, subscription="gw-sub-1", payment_id="pay-1", **kwargs):
@@ -60,6 +61,9 @@ class FakeSubscriptionRepo:
     async def get_by_provider_id(self, gateway_subscription_id):
         return self.subscription
 
+    async def get_by_provider_id_for_update(self, gateway_subscription_id):
+        return self.subscription
+
     async def save(self, subscription: Subscription):
         self.save_called += 1
         self.subscription = subscription
@@ -68,15 +72,23 @@ class FakeSubscriptionRepo:
 
 class FakeWebhookEventRepo:
     def __init__(self, existing_event=None):
-        self.existing_event = existing_event
+        self.events = {}
+        self._last_event = existing_event
+        if existing_event:
+            self.events[existing_event.event_id] = existing_event
         self.saved: list[WebhookEvent] = []
 
+    @property
+    def existing_event(self):
+        return self._last_event
+
     async def get_by_event_id(self, event_id: str):
-        return self.existing_event
+        return self.events.get(event_id)
 
     async def save(self, event: WebhookEvent):
         self.saved.append(event)
-        self.existing_event = event
+        self.events[event.event_id] = event
+        self._last_event = event
         return event
 
 
@@ -402,3 +414,211 @@ async def test_process_webhook_finds_payment_link_charge_by_external_reference_a
     assert payment.provider_payment_id == "pay_456"
     assert payment.payment_status == PaymentStatus.PAID
     assert repo.saved[-1].provider_payment_id == "pay_456"
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_payment_confirmed_for_subscription_cc():
+    subscription = make_subscription()
+    payment_repo = FakePaymentRepo()
+    service = ProcessWebhookService(
+        payment_repo=payment_repo,
+        sub_repo=FakeSubscriptionRepo(subscription),
+        uow=FakeUow(),
+        webhook_event_repo=FakeWebhookEventRepo(),
+    )
+    payload = WebhookPayload(
+        event=EventType.PAYMENT_CONFIRMED,
+        source_event_id="evt-sub-confirmed",
+        details=Details(
+            id="pay-sub-1",
+            subscription="gw-sub-1",
+            status="CONFIRMED",
+            value=Decimal("99.90"),
+            net_value=Decimal("94.50"),
+            payment_date=datetime.now(timezone.utc),
+            external_reference=None,
+            billing_type="CREDIT_CARD",
+        ),
+    )
+
+    response = await service.execute(GatewayProvider.ASAAS, payload)
+
+    assert response.event.value == "PAYMENT_RECEIVED"
+    assert payment_repo.existing.payment_status == PaymentStatus.CONFIRMED
+    assert payment_repo.existing.net_value == Decimal("94.50")
+    assert subscription.status == SubscriptionStatus.ACTIVE
+    assert response.subscription_id == subscription.id
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_payment_confirmed_for_subscription_pix():
+    subscription = make_subscription()
+    payment_repo = FakePaymentRepo()
+    service = ProcessWebhookService(
+        payment_repo=payment_repo,
+        sub_repo=FakeSubscriptionRepo(subscription),
+        uow=FakeUow(),
+        webhook_event_repo=FakeWebhookEventRepo(),
+    )
+    payload = WebhookPayload(
+        event=EventType.PAYMENT_CONFIRMED,
+        source_event_id="evt-sub-confirmed-pix",
+        details=Details(
+            id="pay-sub-1",
+            subscription="gw-sub-1",
+            status="CONFIRMED",
+            value=Decimal("99.90"),
+            net_value=Decimal("94.50"),
+            payment_date=datetime.now(timezone.utc),
+            external_reference=None,
+            billing_type="PIX",
+        ),
+    )
+
+    response = await service.execute(GatewayProvider.ASAAS, payload)
+
+    assert response.event.value == "PAYMENT_STATUS_UPDATED"
+    assert payment_repo.existing.payment_status == PaymentStatus.CONFIRMED
+    assert subscription.status == SubscriptionStatus.PENDING  # PIX is not activated on confirmed!
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_payment_received_does_not_duplicate_activation_cc():
+    subscription = make_subscription()
+    payment = Payment.create_subscription_payment(
+        description="Pagamento",
+        gateway=GatewayProvider.ASAAS,
+        system_payment_id="sub-1:pay-sub-1",
+        provider_payment_id="pay-sub-1",
+        value=Decimal("99.90"),
+        from_system=System.NEECTIFY_SHOP,
+        subscription_id=subscription.id,
+        payment_type=PaymentType.CREDIT_CARD,
+    )
+    payment_repo = FakePaymentRepo(existing=payment)
+    subscription_repo = FakeSubscriptionRepo(subscription)
+    service = ProcessWebhookService(
+        payment_repo=payment_repo,
+        sub_repo=subscription_repo,
+        uow=FakeUow(),
+        webhook_event_repo=FakeWebhookEventRepo(),
+    )
+
+    # 1. First PAYMENT_CONFIRMED activates it
+    payment_date = datetime.now(timezone.utc)
+    payload_conf = WebhookPayload(
+        event=EventType.PAYMENT_CONFIRMED,
+        source_event_id="evt-cc-conf",
+        details=Details(
+            id="pay-sub-1",
+            subscription="gw-sub-1",
+            status="CONFIRMED",
+            value=Decimal("99.90"),
+            net_value=Decimal("94.50"),
+            payment_date=payment_date,
+            billing_type="CREDIT_CARD",
+        ),
+    )
+    await service.execute(GatewayProvider.ASAAS, payload_conf)
+    assert subscription.status == SubscriptionStatus.ACTIVE
+    first_expiry = subscription.expires_at
+
+    # 2. PAYMENT_RECEIVED comes later, should not duplicate activation (expires_at remains same)
+    payload_rec = WebhookPayload(
+        event=EventType.PAYMENT_RECEIVED,
+        source_event_id="evt-cc-rec",
+        details=Details(
+            id="pay-sub-1",
+            subscription="gw-sub-1",
+            status="RECEIVED",
+            value=Decimal("99.90"),
+            net_value=Decimal("94.50"),
+            payment_date=payment_date,
+            billing_type="CREDIT_CARD",
+        ),
+    )
+    await service.execute(GatewayProvider.ASAAS, payload_rec)
+    assert subscription.status == SubscriptionStatus.ACTIVE
+    assert subscription.expires_at == first_expiry
+    assert payment.payment_status == PaymentStatus.PAID
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_payment_deleted_for_subscription():
+    subscription = make_subscription()
+    payment = Payment.create_subscription_payment(
+        description="Pagamento",
+        gateway=GatewayProvider.ASAAS,
+        system_payment_id="sub-1:pay-sub-1",
+        provider_payment_id="pay-sub-1",
+        value=Decimal("99.90"),
+        from_system=System.NEECTIFY_SHOP,
+        subscription_id=subscription.id,
+    )
+    payment_repo = FakePaymentRepo(existing=payment)
+    service = ProcessWebhookService(
+        payment_repo=payment_repo,
+        sub_repo=FakeSubscriptionRepo(subscription),
+        uow=FakeUow(),
+        webhook_event_repo=FakeWebhookEventRepo(),
+    )
+    payload = WebhookPayload(
+        event=EventType.PAYMENT_DELETED,
+        source_event_id="evt-sub-deleted",
+        details=Details(
+            id="pay-sub-1",
+            subscription="gw-sub-1",
+            status="DELETED",
+            value=Decimal("99.90"),
+            net_value=None,
+            payment_date=None,
+            external_reference=None,
+        ),
+    )
+
+    response = await service.execute(GatewayProvider.ASAAS, payload)
+
+    assert response is None
+    assert payment.payment_status == PaymentStatus.CANCELED
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_payment_deleted_after_confirmed_for_subscription():
+    subscription = make_subscription()
+    payment = Payment.create_subscription_payment(
+        description="Pagamento",
+        gateway=GatewayProvider.ASAAS,
+        system_payment_id="sub-1:pay-sub-1",
+        provider_payment_id="pay-sub-1",
+        value=Decimal("99.90"),
+        from_system=System.NEECTIFY_SHOP,
+        subscription_id=subscription.id,
+        payment_type=PaymentType.CREDIT_CARD,
+    )
+    payment.mark_as_confirmed(datetime.now(timezone.utc), Decimal("94.50"))
+    payment_repo = FakePaymentRepo(existing=payment)
+    service = ProcessWebhookService(
+        payment_repo=payment_repo,
+        sub_repo=FakeSubscriptionRepo(subscription),
+        uow=FakeUow(),
+        webhook_event_repo=FakeWebhookEventRepo(),
+    )
+    payload = WebhookPayload(
+        event=EventType.PAYMENT_DELETED,
+        source_event_id="evt-sub-deleted-after-conf",
+        details=Details(
+            id="pay-sub-1",
+            subscription="gw-sub-1",
+            status="DELETED",
+            value=Decimal("99.90"),
+            net_value=None,
+            payment_date=None,
+            external_reference=None,
+        ),
+    )
+
+    response = await service.execute(GatewayProvider.ASAAS, payload)
+
+    assert response is None
+    assert payment.payment_status == PaymentStatus.CANCELED
+

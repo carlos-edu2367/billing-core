@@ -108,6 +108,8 @@ class CancelSubscription:
                 return await self._finalize_cancellation(request, operation)
 
             gateway_reference = await gateway.cancel_subscription(subscription.gateway_subscription_id)
+            if not gateway_reference:
+                gateway_reference = subscription.gateway_subscription_id
         except DomainError:
             raise
         except Exception as exc:
@@ -117,17 +119,23 @@ class CancelSubscription:
             await self.uow.commit()
             raise
 
-        if not gateway_reference:
-            gateway_reference = subscription.gateway_subscription_id
+        try:
+            subscription = await self.repo.get_by_id_for_update(request.subscription_id)
+            self._ensure_owned_subscription(subscription, request.system)
+            if subscription.status != SubscriptionStatus.CANCELED:
+                subscription.cancel(job_id=request.job_id, reason=request.reason, cancelled_at=datetime.now(timezone.utc))
+                await self.repo.save(subscription)
 
-        operation.mark_completed(gateway_reference=gateway_reference)
-
-        subscription = await self.repo.get_by_id_for_update(request.subscription_id)
-        self._ensure_owned_subscription(subscription, request.system)
-        if subscription.status != SubscriptionStatus.CANCELED:
-            subscription.cancel(job_id=request.job_id, reason=request.reason, cancelled_at=datetime.now(timezone.utc))
-            await self.repo.save(subscription)
-
-        await self.gateway_operation_repo.save(operation)
-        await self.uow.commit()
-        return self._build_response(subscription)
+            operation.mark_completed(gateway_reference=gateway_reference)
+            await self.gateway_operation_repo.save(operation)
+            await self.uow.commit()
+            return self._build_response(subscription)
+        except Exception as exc:
+            await self.uow.rollback()
+            operation.mark_requires_reconciliation(
+                gateway_reference=gateway_reference,
+                error_message=str(exc),
+            )
+            await self.gateway_operation_repo.save(operation)
+            await self.uow.commit()
+            raise DomainError("Assinatura cancelada no gateway, mas a sincronizacao local falhou. Operacao marcada para reconciliacao.") from exc

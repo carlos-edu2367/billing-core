@@ -48,7 +48,7 @@ class Payment:
         if value <= 0:
             raise DomainError("Pagamento precisa ter valor positivo.")
 
-        if net_value < 0:
+        if net_value is not None and net_value < 0:
             raise DomainError("Pagamento nao pode ter valor liquido negativo.")
 
         self.description = description.strip() if description else None
@@ -86,6 +86,7 @@ class Payment:
         from_system: System,
         subscription_id: UUID,
         checkout_link: str | None = None,
+        payment_type: PaymentType = PaymentType.PIX,
     ) -> "Payment":
         return cls(
             description=description,
@@ -96,6 +97,7 @@ class Payment:
             from_system=from_system,
             subscription_id=subscription_id,
             checkout_link=checkout_link,
+            payment_type=payment_type,
             movimentation_type=MovimentationType.SUBSCRIPTION_PAYMENT,
         )
 
@@ -132,7 +134,7 @@ class Payment:
         return self.subscription_id == subscription_id
 
     def mark_as_canceled(self):
-        if self.payment_status not in {PaymentStatus.PENDING, PaymentStatus.OVERDUE}:
+        if self.payment_status not in {PaymentStatus.PENDING, PaymentStatus.OVERDUE, PaymentStatus.CONFIRMED}:
             raise DomainError("Nao e possivel cancelar esse pagamento.")
         self.payment_status = PaymentStatus.CANCELED
         self.canceled_date = datetime.now(timezone.utc)

@@ -29,6 +29,7 @@ class Details(BaseModel):
     net_value: Decimal | None = None
     payment_date: datetime | None = None
     external_reference: str | None = None
+    billing_type: str | None = None
 
     @field_validator("payment_date", mode="before")
     @classmethod

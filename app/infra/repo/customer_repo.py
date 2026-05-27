@@ -1,3 +1,4 @@
+from app.domain.enums.system import System
 from app.domain.entities.customer import Customer
 from app.infra.db.models.customer import BillingCustomerModel
 from app.application.repositories.customer_repo import CustomerRepository
@@ -26,6 +27,17 @@ class CustomerRepositoryINFRA(CustomerRepository):
 
     async def get_by_system_id(self, system_id: str) -> Customer:
         stmt = select(BillingCustomerModel).where(BillingCustomerModel.system_customer_id == system_id)
+        r = await self.session.execute(stmt)
+        r = r.scalars().one_or_none()
+        if not r:
+            raise NotFoundError("Customer Not Found")
+        return r.to_domain()
+
+    async def get_by_system_id_and_system(self, system_id: str, system: System) -> Customer:
+        stmt = select(BillingCustomerModel).where(
+            BillingCustomerModel.system_customer_id == system_id,
+            BillingCustomerModel.system == system
+        )
         r = await self.session.execute(stmt)
         r = r.scalars().one_or_none()
         if not r:

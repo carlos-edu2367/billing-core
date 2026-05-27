@@ -82,6 +82,7 @@ class InterfaceGateway(ABC):
         next_due_date: date,
         cycle: SubscriptionType,
         description: str,
+        external_reference: str | None = None,
     ) -> str:
         pass
 

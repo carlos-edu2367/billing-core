@@ -113,6 +113,7 @@ class AsaasProvider(InterfaceGateway):
                 "net_value": payment.get("netValue"),
                 "payment_date": payment.get("paymentDate"),
                 "external_reference": payment.get("externalReference"),
+                "billing_type": payment.get("billingType") or subscription.get("billingType"),
             },
         }
         return WebhookPayload.model_validate(normalized)
@@ -125,6 +126,7 @@ class AsaasProvider(InterfaceGateway):
         next_due_date: date,
         cycle: SubscriptionType,
         description: str,
+        external_reference: str | None = None,
     ) -> str:
         if billing_type == PaymentType.DEBIT_CARD:
             raise DomainError("DEBIT_CARD não é suportado pelo Asaas para assinaturas recorrentes.")
@@ -137,6 +139,8 @@ class AsaasProvider(InterfaceGateway):
             "cycle": cycle.value,
             "description": description,
         }
+        if external_reference:
+            payload["externalReference"] = external_reference
         response = await self.asaas.post("/subscriptions", payload)
         return response["id"]
 

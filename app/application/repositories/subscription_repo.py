@@ -17,6 +17,10 @@ class SubscriptionRepository(ABC):
         pass
 
     @abstractmethod
+    async def get_by_provider_id_for_update(self, provider_id: str) -> Subscription:
+        pass
+
+    @abstractmethod
     async def get_by_system_id(self, system_id: str) -> Subscription:
         pass
 

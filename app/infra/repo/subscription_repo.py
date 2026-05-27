@@ -31,6 +31,14 @@ class SubscriptionRepositoryINFRA(SubscriptionRepository):
             raise NotFoundError("Subscription Not Found")
         return r.to_domain()
 
+    async def get_by_provider_id_for_update(self, provider_id: str) -> Subscription:
+        stmt = select(SubscriptionModel).where(SubscriptionModel.gateway_subscription_id == provider_id).with_for_update()
+        r = await self.session.execute(stmt)
+        r = r.scalars().one_or_none()
+        if not r:
+            raise NotFoundError("Subscription Not Found")
+        return r.to_domain()
+
 
     async def get_by_system_id(self, system_id: str) -> Subscription:
         stmt = select(SubscriptionModel).where(SubscriptionModel.system_subscription_id == system_id)

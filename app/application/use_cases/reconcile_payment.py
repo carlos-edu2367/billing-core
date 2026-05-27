@@ -12,12 +12,18 @@ from app.domain.enums.payment_status import PaymentStatus
 def apply_gateway_payment_status(
     payment: Payment,
     status: str,
-    payment_date: date | None,
+    payment_date: date | datetime | None,
     net_value: Decimal | None,
 ) -> bool:
     before = payment.payment_status
     normalized = (status or "").upper()
-    dt = datetime.combine(payment_date, time.min, tzinfo=timezone.utc) if payment_date else None
+    
+    dt = None
+    if payment_date:
+        if isinstance(payment_date, datetime):
+            dt = payment_date
+        else:
+            dt = datetime.combine(payment_date, time.min, tzinfo=timezone.utc)
 
     if normalized == "CONFIRMED":
         payment.mark_as_confirmed(dt, net_value)
@@ -29,7 +35,7 @@ def apply_gateway_payment_status(
         if payment.payment_status in {PaymentStatus.PAID, PaymentStatus.CONFIRMED}:
             payment.mark_as_refunded()
     elif normalized in {"DELETED"}:
-        if payment.payment_status in {PaymentStatus.PENDING, PaymentStatus.OVERDUE}:
+        if payment.payment_status in {PaymentStatus.PENDING, PaymentStatus.OVERDUE, PaymentStatus.CONFIRMED}:
             payment.mark_as_canceled()
 
     return before != payment.payment_status

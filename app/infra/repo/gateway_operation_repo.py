@@ -7,6 +7,8 @@ from app.domain.errors import NotFoundError
 from app.infra.db.models.gateway_operation import GatewayOperationModel
 
 
+from app.domain.enums.gateway_operation_status import GatewayOperationStatus
+
 class GatewayOperationRepositoryINFRA(GatewayOperationRepository):
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -16,6 +18,12 @@ class GatewayOperationRepositoryINFRA(GatewayOperationRepository):
         result = await self.session.execute(stmt)
         record = result.scalars().one_or_none()
         return record.to_domain() if record else None
+
+    async def list_by_status(self, status: GatewayOperationStatus) -> list[GatewayOperation]:
+        stmt = select(GatewayOperationModel).where(GatewayOperationModel.status == status.value)
+        result = await self.session.execute(stmt)
+        records = result.scalars().all()
+        return [record.to_domain() for record in records]
 
     async def save(self, operation: GatewayOperation) -> GatewayOperation:
         if not operation.id:

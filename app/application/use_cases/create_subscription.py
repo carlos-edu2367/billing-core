@@ -91,6 +91,7 @@ class CreateSubscription:
                 next_due_date=request.next_due_date or datetime.now(timezone.utc).date(),
                 cycle=request.subscription_type,
                 description=request.description,
+                external_reference=request.system_sub_id,
             )
 
             subscription = Subscription(
@@ -117,6 +118,12 @@ class CreateSubscription:
             if payment_info is None:
                 raise DomainError("Gateway nao retornou pagamento para a assinatura criada.")
 
+            billing_type_val = getattr(payment_info, "billing_type", "CREDIT_CARD") or "CREDIT_CARD"
+            try:
+                p_type = PaymentType[billing_type_val.upper()]
+            except KeyError:
+                p_type = PaymentType.CREDIT_CARD
+
             payment = Payment.create_subscription_payment(
                 description=f"Pagamento relacionado a assinatura: {subscription.description}",
                 gateway=subscription.gateway_provider,
@@ -126,6 +133,7 @@ class CreateSubscription:
                 from_system=subscription.from_system,
                 subscription_id=subscription.id,
                 checkout_link=payment_info.invoice_url,
+                payment_type=p_type,
             )
 
             payment = await self.payment_repo.save(payment)
