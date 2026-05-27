@@ -1,3 +1,4 @@
+import logging
 from datetime import date
 from decimal import Decimal
 
@@ -17,6 +18,19 @@ from app.domain.enums.subscription_type import SubscriptionType
 from app.domain.errors import DomainError
 from app.infra.config import settings
 
+logger = logging.getLogger(__name__)
+
+
+class AsaasAPIError(Exception):
+    """Erro retornado pelo Asaas com status HTTP e corpo da resposta."""
+
+    def __init__(self, status_code: int, body: str, method: str, endpoint: str) -> None:
+        super().__init__(f"Asaas {method} {endpoint} → {status_code}: {body}")
+        self.status_code = status_code
+        self.body = body
+        self.method = method
+        self.endpoint = endpoint
+
 
 class AsaasAPI:
     def __init__(self, api_key: str, base_url: str):
@@ -31,22 +45,46 @@ class AsaasAPI:
         normalized = endpoint if endpoint.startswith("/") else f"/{endpoint}"
         return f"{self.base_url}{normalized}"
 
+    def _handle_error(self, response: httpx.Response, method: str, endpoint: str) -> None:
+        """Loga o body completo do Asaas e levanta AsaasAPIError com os detalhes."""
+        body = response.text
+        logger.error(
+            "asaas_api_error",
+            extra={
+                "extra_data": {
+                    "method": method,
+                    "endpoint": endpoint,
+                    "status_code": response.status_code,
+                    "response_body": body,
+                }
+            },
+        )
+        raise AsaasAPIError(
+            status_code=response.status_code,
+            body=body,
+            method=method,
+            endpoint=endpoint,
+        )
+
     async def get(self, endpoint: str, params: dict | None = None) -> dict:
         async with httpx.AsyncClient(timeout=30.0, headers=self.headers) as client:
             response = await client.get(self._build_url(endpoint), params=params)
-            response.raise_for_status()
+            if response.is_error:
+                self._handle_error(response, "GET", endpoint)
             return response.json()
 
     async def post(self, endpoint: str, payload: dict) -> dict:
         async with httpx.AsyncClient(timeout=30.0, headers=self.headers) as client:
             response = await client.post(self._build_url(endpoint), json=payload)
-            response.raise_for_status()
+            if response.is_error:
+                self._handle_error(response, "POST", endpoint)
             return response.json()
 
     async def delete(self, endpoint: str) -> dict:
         async with httpx.AsyncClient(timeout=30.0, headers=self.headers) as client:
             response = await client.delete(self._build_url(endpoint))
-            response.raise_for_status()
+            if response.is_error:
+                self._handle_error(response, "DELETE", endpoint)
             return response.json()
 
 

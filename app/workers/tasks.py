@@ -8,6 +8,7 @@ from app.application.dtos.request.webhook import WebhookPayload
 from app.application.dtos.response.webhook import InternalEventType, SendInternalWebhookPayment, SendInternalWebhookSubscription
 from app.application.use_cases.cancel_subscription import CancelSubscription
 from app.application.use_cases.create_payment import CreatePayment
+from app.infra.interfaces.asaas_provider import AsaasAPIError
 from app.application.use_cases.create_subscription import CreateSubscription
 from app.application.use_cases.reconcile_payment import ReconcilePayment
 from app.domain.entities.internal_webhook_delivery import InternalWebhookDelivery
@@ -283,6 +284,22 @@ async def create_subscription_worker(ctx, dto_dict: dict, customer_provider_id: 
         await register_dead_letter(ctx["redis"], "create_subscription_worker", job_id)
         ctx["logger"].warning("Subscription rejected", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
         return {"status": "failed", "error": str(exc)}
+    except AsaasAPIError as exc:
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="failed",
+            attempt=job_try,
+            finished_at=datetime.now(timezone.utc),
+            error_code=f"AsaasAPIError_{exc.status_code}",
+            error_message=exc.body[:500],
+        )
+        await register_dead_letter(ctx["redis"], "create_subscription_worker", job_id)
+        ctx["logger"].error(
+            "Subscription creation failed — Asaas returned error",
+            extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
+        )
+        return {"status": "failed", "error": str(exc)}
     except Exception as e:
         is_final_try = job_try >= settings.WORKER_MAX_TRIES
         await update_job_metadata(
@@ -376,6 +393,32 @@ async def create_payment_worker(ctx, dto_dict: dict, customer_provider_id: str, 
         )
         await register_dead_letter(ctx["redis"], "create_payment_worker", job_id)
         ctx["logger"].warning("Payment rejected", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
+        return {"status": "failed", "error": str(exc)}
+    except AsaasAPIError as exc:
+        # Erros 4xx do Asaas são falhas de negócio (payload inválido, cliente
+        # inexistente, etc.) — não há ponto em retentar sem intervenção manual.
+        # O body completo já foi logado em asaas_provider._handle_error.
+        is_client_error = 400 <= exc.status_code < 500
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="failed",
+            attempt=job_try,
+            finished_at=datetime.now(timezone.utc),
+            error_code=f"AsaasAPIError_{exc.status_code}",
+            error_message=exc.body[:500],
+        )
+        await register_dead_letter(ctx["redis"], "create_payment_worker", job_id)
+        ctx["logger"].error(
+            "Payment creation failed — Asaas returned error",
+            extra={
+                "job_id": job_id,
+                "job_try": job_try,
+                "asaas_status": exc.status_code,
+                "asaas_body": exc.body,
+                "terminal": is_client_error,
+            },
+        )
         return {"status": "failed", "error": str(exc)}
     except Exception as exc:
         is_final_try = job_try >= settings.WORKER_MAX_TRIES
@@ -538,6 +581,22 @@ async def cancel_subscription_worker(ctx, dto_dict: dict):
         ctx["logger"].warning(
             "Subscription cancellation rejected",
             extra={"job_id": job_id, "job_try": job_try, "error": str(exc)},
+        )
+        return {"status": "failed", "error": str(exc)}
+    except AsaasAPIError as exc:
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="failed",
+            attempt=job_try,
+            finished_at=datetime.now(timezone.utc),
+            error_code=f"AsaasAPIError_{exc.status_code}",
+            error_message=exc.body[:500],
+        )
+        await register_dead_letter(ctx["redis"], "cancel_subscription_worker", job_id)
+        ctx["logger"].error(
+            "Subscription cancellation failed — Asaas returned error",
+            extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
         )
         return {"status": "failed", "error": str(exc)}
     except Exception as exc:

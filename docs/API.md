@@ -11,10 +11,13 @@ O par precisa existir em `INTERNAL_API_CLIENTS`.
 
 ### Scopes atuais
 
-- `subscriptions:create`
-- `subscriptions:cancel`
-- `jobs:read`
-- `metrics:read`
+- `customers:create` (Criar/Consultar clientes no Asaas)
+- `subscriptions:create` (Criar assinaturas)
+- `subscriptions:cancel` (Cancelar assinaturas)
+- `payments:create` (Criar pagamentos avulsos)
+- `payments:read` (Consultar pagamentos locais)
+- `jobs:read` (Consultar estado de processamento assíncrono)
+- `metrics:read` (Acesso a métricas da aplicação)
 
 ## Headers relevantes
 
@@ -27,6 +30,45 @@ O par precisa existir em `INTERNAL_API_CLIENTS`.
 | `asaas-access-token` | validacao de webhook Asaas |
 
 ## Endpoints
+
+### `POST /v1/customers`
+
+Registra um novo cliente no provedor de pagamento (Asaas). Este endpoint é **idempotente por CPF/CNPJ**: se o cliente já estiver registrado no Asaas, ele retornará o mesmo `provider_customer_id` existente sem duplicar o cadastro.
+
+> [!IMPORTANT]
+> **Fluxo de Integração Obrigatório para o Marketfy (e outros SaaS):**
+> O campo `customer_provider_id` é obrigatório para chamar `POST /v1/payments`. Para evitar redundâncias e erros:
+> 1. Salve o `provider_customer_id` retornado no banco de dados local do seu SaaS, associado ao cadastro do usuário.
+> 2. Antes de criar uma cobrança avulsa, verifique se o usuário já possui este ID.
+> 3. Caso não possua, chame `POST /v1/customers` passando o CPF/CNPJ do usuário, salve o ID recebido localmente, e use-o na chamada de pagamento.
+> 4. Caso já possua, **reutilize o ID salvo** diretamente no payload de `POST /v1/payments`.
+
+#### Auth
+
+- obrigatória
+- scope: `customers:create`
+
+#### Body
+
+```json
+{
+  "nome_completo": "João Silva",
+  "email": "joao@exemplo.com",
+  "cpf": "390.533.447-05",
+  "system_customer_id": "user_42",
+  "system": "marketfy"
+}
+```
+
+*Nota: é obrigatório e exclusivo o envio de `cpf` ou `cnpj`.*
+
+#### Resposta `201`
+
+```json
+{
+  "provider_customer_id": "cus_000005113076"
+}
+```
 
 ### `POST /v1/subscriptions`
 

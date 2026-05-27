@@ -32,8 +32,15 @@ Este guia serve para conectar um novo produto da Neectify ao Billing Core sem du
 
 ## Pagamentos avulsos
 
-1. Criar customer no gateway ou reutilizar `customer_provider_id`.
-2. Chamar `POST /v1/payments` com `Idempotency-Key`.
+> [!IMPORTANT]
+> **Vínculo de Cliente (Asaas):**
+> O campo `customer_provider_id` é obrigatório para chamar `POST /v1/payments`. O SaaS **deve** criar o cliente ou reutilizar o ID associado ao CPF/CNPJ.
+
+1. **Obter o `customer_provider_id`:**
+   - Verifique se o usuário já possui um `customer_provider_id` salvo localmente no banco de dados do seu SaaS.
+   - Se **não possuir**, chame `POST /v1/customers` passando os dados cadastrais (CPF ou CNPJ) e salve o `provider_customer_id` retornado associado a esse usuário. O endpoint é idempotente: se o CPF/CNPJ já existir no Asaas, ele retornará o ID do cadastro existente de forma segura.
+   - Se **já possuir**, reutilize o ID persistido localmente nas chamadas subsequentes sem chamar o endpoint de criação novamente.
+2. Chamar `POST /v1/payments` com `Idempotency-Key` enviando o `customer_provider_id`.
 3. Ler `job_id` e consultar `GET /v1/jobs/{job_id}` ate obter o resultado.
 4. Redirecionar o usuario para `checkout_url`.
 5. Receber webhook interno assinado para mudancas de status.
