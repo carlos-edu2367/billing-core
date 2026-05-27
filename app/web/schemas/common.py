@@ -1,5 +1,6 @@
 from enum import Enum
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -66,6 +67,7 @@ class JobStatusResponse(BaseModel):
     finished_at: datetime | None = Field(default=None, description="Data/hora de finalização do job, quando disponível.")
     error_code: str | None = Field(default=None, description="Código de erro operacional, quando houver.")
     error_message: str | None = Field(default=None, description="Mensagem de erro registrada na tentativa atual/final.")
+    result: dict[str, Any] | None = Field(default=None, description="Resultado publico retornado pelo worker quando o job conclui com sucesso.")
 
 
 def build_error_responses(*status_codes: int) -> dict[int, dict[str, object]]:

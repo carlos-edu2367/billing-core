@@ -3,6 +3,8 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import uuid4
 
+from arq.jobs import serialize_result
+
 from app.domain.entities.payment import Payment
 from app.domain.entities.subscription import Subscription
 from app.domain.enums.gateway_provider import GatewayProvider
@@ -217,6 +219,52 @@ def test_create_payment_link_rejects_debit_card(client):
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_get_job_status_returns_completed_worker_result(client, fake_redis):
+    job_id = "job-payment-link-result"
+    fake_redis.values[f"billing_core:job_owner:{job_id}"] = System.NEECTIFY_SHOP.value
+    fake_redis.hashes[f"billing_core:job_meta:{job_id}"] = {
+        "status": "completed",
+        "job_name": "create_payment_link_worker",
+        "attempt": "1",
+        "max_tries": "3",
+        "request_id": "req-1",
+        "created_at": "2026-05-27T12:00:00+00:00",
+        "started_at": "2026-05-27T12:00:01+00:00",
+        "finished_at": "2026-05-27T12:00:02+00:00",
+        "error_code": "",
+        "error_message": "",
+    }
+    fake_redis.values[f"arq:result:{job_id}"] = serialize_result(
+        function="workers:tasks.create_payment_link_worker",
+        args=(),
+        kwargs={},
+        job_try=1,
+        enqueue_time_ms=0,
+        success=True,
+        result={
+            "status": "success",
+            "result": {
+                "payment_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+                "checkout_url": "https://www.asaas.com/c/pml_123",
+                "payment_status": "pending",
+            },
+        },
+        start_ms=0,
+        finished_ms=1,
+        ref=job_id,
+        queue_name="arq:queue",
+        job_id=job_id,
+    )
+
+    response = client.get(f"/v1/jobs/{job_id}", headers=auth_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["result"]["checkout_url"] == "https://www.asaas.com/c/pml_123"
+    assert body["result"]["payment_id"] == "3fa85f64-5717-4562-b3fc-2c963f66afa6"
 
 
 def test_create_payment_rejects_debit_card(client):

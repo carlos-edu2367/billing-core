@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from arq.jobs import DeserializationError, deserialize_result
 
 from app.infra.jobs import get_job_metadata
 from app.web.dependencies.common import get_redis_pool
@@ -8,6 +9,28 @@ from app.web.schemas.common import JobStatus, JobStatusResponse, build_error_res
 
 
 router = APIRouter(prefix="/v1/jobs", tags=["jobs"])
+
+
+async def _get_public_job_result(redis, job_id: str) -> dict | None:
+    raw_result = await redis.get(f"arq:result:{job_id}")
+    if not raw_result:
+        return None
+
+    try:
+        result_info = deserialize_result(raw_result)
+    except DeserializationError:
+        return None
+
+    if not result_info.success:
+        return None
+
+    worker_result = result_info.result
+    if isinstance(worker_result, dict) and "result" in worker_result:
+        public_result = worker_result["result"]
+    else:
+        public_result = worker_result
+
+    return public_result if isinstance(public_result, dict) else None
 
 
 @router.get(
@@ -60,9 +83,11 @@ async def get_job_status(
         )
 
     if metadata:
+        job_status = JobStatus(metadata.get("status", JobStatus.PROCESSING.value))
+        result = await _get_public_job_result(redis, job_id) if job_status == JobStatus.COMPLETED else None
         return JobStatusResponse(
             job_id=job_id,
-            status=JobStatus(metadata.get("status", JobStatus.PROCESSING.value)),
+            status=job_status,
             job_name=metadata.get("job_name"),
             attempt=int(metadata["attempt"]) if metadata.get("attempt") else None,
             max_tries=int(metadata["max_tries"]) if metadata.get("max_tries") else None,
@@ -72,11 +97,12 @@ async def get_job_status(
             finished_at=metadata.get("finished_at") or None,
             error_code=metadata.get("error_code") or None,
             error_message=metadata.get("error_message") or None,
+            result=result,
         )
 
-    result = await redis.get(f"arq:result:{job_id}")
+    result = await _get_public_job_result(redis, job_id)
     if result:
-        return {"job_id": job_id, "status": JobStatus.COMPLETED}
+        return {"job_id": job_id, "status": JobStatus.COMPLETED, "result": result}
 
     score = await redis.zscore("arq:queue", job_id)
     if score is not None:
