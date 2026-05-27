@@ -111,7 +111,7 @@ class Payment:
         from_system: System,
         checkout_link: str | None,
         webhook_link: str | None,
-        due_date: date,
+        due_date: date | None,
         external_reference: str,
     ) -> "Payment":
         return cls(

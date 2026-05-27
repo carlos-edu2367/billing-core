@@ -22,6 +22,10 @@ class PaymentRepository(ABC):
         pass
 
     @abstractmethod
+    async def get_by_external_reference(self, external_reference: str) -> Payment | None:
+        pass
+
+    @abstractmethod
     async def list_by_system(self, system: System, limit: int, page: int) -> list[Payment]:
         pass
 

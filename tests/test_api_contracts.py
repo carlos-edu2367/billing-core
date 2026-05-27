@@ -45,6 +45,18 @@ def payment_payload():
     }
 
 
+def payment_link_payload():
+    return {
+        "value": "72.00",
+        "billing_type": "UNDEFINED",
+        "description": "Creditos NF-e - pack_100",
+        "due_date_limit_days": 3,
+        "system": "neectify_shop",
+        "system_payment_id": "pack-100",
+        "webhook_link": "https://hooks.neectify.local/billing/payment",
+    }
+
+
 def auth_headers():
     return {
         "X-System": System.NEECTIFY_SHOP.value,
@@ -167,6 +179,44 @@ def test_create_payment_is_idempotent_per_key_and_payload(client):
     assert second.status_code == 202
     assert first.json()["job_id"] == second.json()["job_id"]
     assert "ja recebido anteriormente" in second.json()["message"]
+
+
+def test_create_payment_link_requires_idempotency_key(client):
+    response = client.post(
+        "/v1/payment-links",
+        json=payment_link_payload(),
+        headers=auth_headers(),
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_create_payment_link_is_idempotent_per_key_and_payload(client, fake_redis):
+    headers = auth_headers() | {"Idempotency-Key": "payment-link-idem-1"}
+
+    first = client.post("/v1/payment-links", json=payment_link_payload(), headers=headers)
+    second = client.post("/v1/payment-links", json=payment_link_payload(), headers=headers)
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert first.json()["job_id"] == second.json()["job_id"]
+    assert "Checkout ja recebido anteriormente" in second.json()["message"]
+    assert fake_redis.enqueued_jobs[0][0][0] == "workers:tasks.create_payment_link_worker"
+    assert fake_redis.enqueued_jobs[0][0][1]["system_payment_id"] == "pack-100"
+    assert len(fake_redis.enqueued_jobs[0][0]) == 3
+
+
+def test_create_payment_link_rejects_debit_card(client):
+    headers = auth_headers() | {"Idempotency-Key": "payment-link-debit"}
+    response = client.post(
+        "/v1/payment-links",
+        json=payment_link_payload() | {"billing_type": "DEBIT_CARD"},
+        headers=headers,
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
 
 
 def test_create_payment_rejects_debit_card(client):

@@ -41,6 +41,12 @@ class CreatePaymentGatewayResponse:
 
 
 @dataclass
+class CreatePaymentLinkGatewayResponse:
+    payment_link_id: str
+    checkout_url: str
+
+
+@dataclass
 class PaymentStatusGatewayResponse:
     payment_id: str
     status: str
@@ -101,6 +107,18 @@ class InterfaceGateway(ABC):
         description: str,
         external_reference: str,
     ) -> CreatePaymentGatewayResponse:
+        pass
+
+    @abstractmethod
+    async def create_payment_link(
+        self,
+        name: str,
+        value: Decimal,
+        billing_type: PaymentType,
+        description: str,
+        external_reference: str,
+        due_date_limit_days: int = 3,
+    ) -> CreatePaymentLinkGatewayResponse:
         pass
 
     @abstractmethod

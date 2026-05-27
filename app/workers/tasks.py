@@ -2,12 +2,14 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from app.application.dtos.request.payment import CreatePaymentDTO
+from app.application.dtos.request.payment_link import CreatePaymentLinkDTO
 from app.application.dtos.request.subscription import CreateSubscriptionDTO
 from app.application.dtos.request.subscription_cancel import CancelSubscriptionDTO
 from app.application.dtos.request.webhook import WebhookPayload
 from app.application.dtos.response.webhook import InternalEventType, SendInternalWebhookPayment, SendInternalWebhookSubscription
 from app.application.use_cases.cancel_subscription import CancelSubscription
 from app.application.use_cases.create_payment import CreatePayment
+from app.application.use_cases.create_payment_link import CreatePaymentLink
 from app.infra.interfaces.asaas_provider import AsaasAPIError
 from app.application.use_cases.create_subscription import CreateSubscription
 from app.application.use_cases.reconcile_payment import ReconcilePayment
@@ -434,6 +436,98 @@ async def create_payment_worker(ctx, dto_dict: dict, customer_provider_id: str, 
         if is_final_try:
             await register_dead_letter(ctx["redis"], "create_payment_worker", job_id)
         ctx["logger"].error("Payment creation failed", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
+        raise
+
+
+async def create_payment_link_worker(ctx, dto_dict: dict, gateway_provider_str: str):
+    job_id = ctx["job_id"]
+    job_try = ctx["job_try"]
+
+    try:
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="processing",
+            attempt=job_try,
+            started_at=datetime.now(timezone.utc),
+            error_code=None,
+            error_message=None,
+        )
+        dto = CreatePaymentLinkDTO.model_validate(dto_dict)
+        gateway_provider = GatewayProvider[gateway_provider_str.upper()]
+
+        async with AsyncSessionLocal() as session:
+            payment_repo = PaymentRepositoryINFRA(session)
+            gateway_operation_repo = GatewayOperationRepositoryINFRA(session)
+            uow = UowProvider(session)
+            get_gateway = GetGatewayInfra()
+
+            service = CreatePaymentLink(
+                get_gateway=get_gateway,
+                uow=uow,
+                payment_repo=payment_repo,
+                gateway_operation_repo=gateway_operation_repo,
+            )
+            result = await service.execute(dto, gateway_provider)
+
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="completed",
+            finished_at=datetime.now(timezone.utc),
+        )
+        ctx["logger"].info("Payment link created", extra={"job_id": job_id, "job_try": job_try, "system": dto.system.value})
+        return {"status": "success", "result": _dump_result(result)}
+    except (DomainError, NotFoundError, ValueError) as exc:
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="failed",
+            attempt=job_try,
+            finished_at=datetime.now(timezone.utc),
+            error_code=exc.__class__.__name__,
+            error_message=str(exc),
+        )
+        await register_dead_letter(ctx["redis"], "create_payment_link_worker", job_id)
+        ctx["logger"].warning("Payment link rejected", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
+        return {"status": "failed", "error": str(exc)}
+    except AsaasAPIError as exc:
+        is_client_error = 400 <= exc.status_code < 500
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="failed",
+            attempt=job_try,
+            finished_at=datetime.now(timezone.utc),
+            error_code=f"AsaasAPIError_{exc.status_code}",
+            error_message=exc.body[:500],
+        )
+        await register_dead_letter(ctx["redis"], "create_payment_link_worker", job_id)
+        ctx["logger"].error(
+            "Payment link creation failed - Asaas returned error",
+            extra={
+                "job_id": job_id,
+                "job_try": job_try,
+                "asaas_status": exc.status_code,
+                "asaas_body": exc.body,
+                "terminal": is_client_error,
+            },
+        )
+        return {"status": "failed", "error": str(exc)}
+    except Exception as exc:
+        is_final_try = job_try >= settings.WORKER_MAX_TRIES
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="failed" if is_final_try else "retrying",
+            attempt=job_try,
+            finished_at=datetime.now(timezone.utc) if is_final_try else None,
+            error_code=exc.__class__.__name__,
+            error_message=str(exc),
+        )
+        if is_final_try:
+            await register_dead_letter(ctx["redis"], "create_payment_link_worker", job_id)
+        ctx["logger"].error("Payment link creation failed", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
         raise
 
 

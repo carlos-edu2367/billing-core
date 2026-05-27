@@ -41,6 +41,11 @@ class ProcessWebhookService():
 
         if payload.details.id and not payload.details.subscription:
             payment = await self.payment_repo.get_by_provider_id(payload.details.id)
+            if payment is None and payload.details.external_reference:
+                payment = await self.payment_repo.get_by_external_reference(payload.details.external_reference)
+                if payment is not None:
+                    payment.provider_payment_id = payload.details.id
+
             if payment is None:
                 logger.warning(
                     "Pagamento avulso nao encontrado para processamento",

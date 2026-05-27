@@ -42,6 +42,20 @@ class FakeCreatePaymentService:
         )
 
 
+class FakeCreatePaymentLinkService:
+    async def execute(self, dto, gateway_provider):
+        return SimpleNamespace(
+            payment_id=uuid4(),
+            checkout_url="https://www.asaas.com/c/pml_123",
+            payment_status=PaymentStatus.PENDING,
+            model_dump=lambda mode="json": {
+                "payment_id": str(uuid4()),
+                "checkout_url": "https://www.asaas.com/c/pml_123",
+                "payment_status": "pending",
+            },
+        )
+
+
 class FakeCustomerRepo:
     def __init__(self, session):
         self.session = session
@@ -137,6 +151,42 @@ async def test_create_payment_worker_schedules_single_reconciliation(monkeypatch
     reconcile_jobs = [item for item in fake_redis.enqueued_jobs if item[0][0] == "workers:tasks.reconcile_pending_payment_worker"]
     assert len(reconcile_jobs) == 1
     assert reconcile_jobs[0][1]["_defer_by"] == 900
+
+
+@pytest.mark.asyncio
+async def test_create_payment_link_worker_returns_checkout_url_without_reconciliation(monkeypatch, fake_redis):
+    monkeypatch.setattr(tasks, "AsyncSessionLocal", lambda: DummySession())
+    monkeypatch.setattr(tasks, "PaymentRepositoryINFRA", lambda session: object())
+    monkeypatch.setattr(tasks, "GatewayOperationRepositoryINFRA", lambda session: object())
+    monkeypatch.setattr(tasks, "UowProvider", lambda session: object())
+    monkeypatch.setattr(tasks, "GetGatewayInfra", lambda: object())
+    monkeypatch.setattr(tasks, "CreatePaymentLink", lambda **kwargs: FakeCreatePaymentLinkService())
+
+    ctx = {
+        "job_id": "job-link-1",
+        "job_try": 1,
+        "redis": fake_redis,
+        "logger": SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None, error=lambda *a, **k: None),
+    }
+
+    response = await tasks.create_payment_link_worker(
+        ctx,
+        {
+            "value": "72.00",
+            "billing_type": "UNDEFINED",
+            "description": "Creditos NF-e - pack_100",
+            "due_date_limit_days": 3,
+            "system": "neectify_shop",
+            "system_payment_id": "pack-100",
+            "webhook_link": "https://hooks.neectify.local/billing/payment",
+        },
+        "ASAAS",
+    )
+
+    assert response["status"] == "success"
+    assert response["result"]["checkout_url"] == "https://www.asaas.com/c/pml_123"
+    reconcile_jobs = [item for item in fake_redis.enqueued_jobs if item[0][0] == "workers:tasks.reconcile_pending_payment_worker"]
+    assert reconcile_jobs == []
 
 
 @pytest.mark.asyncio

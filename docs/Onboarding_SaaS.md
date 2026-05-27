@@ -9,11 +9,14 @@ Este guia serve para conectar um novo produto da Neectify ao Billing Core sem du
 1. Definir o `System` do novo produto.
 2. Registrar o cliente interno em `INTERNAL_API_CLIENTS` com API key e scopes.
 3. Definir o host interno permitido para callbacks em `ALLOWED_INTERNAL_WEBHOOK_HOSTS`.
-4. Fazer o produto chamar `POST /v1/subscriptions` com `Idempotency-Key`.
-5. Fazer o produto acompanhar o `job_id` por `GET /v1/jobs/{job_id}`.
-6. Definir o contrato do webhook interno que o produto vai receber.
+4. Escolher os fluxos usados pelo produto: assinatura, pagamento avulso com customer ou checkout avulso via payment link.
+5. Fazer o produto chamar `POST /v1/subscriptions`, `POST /v1/payments` ou `POST /v1/payment-links` com `Idempotency-Key`, conforme o fluxo.
+6. Fazer o produto acompanhar o `job_id` por `GET /v1/jobs/{job_id}`.
+7. Definir o contrato do webhook interno que o produto vai receber.
 
 ## O que o produto precisa enviar
+
+### Para assinaturas
 
 - `system`
 - `system_sub_id`
@@ -22,6 +25,16 @@ Este guia serve para conectar um novo produto da Neectify ao Billing Core sem du
 - `value`
 - `subscription_type`
 - `expires_at`
+- `webhook_link`
+
+### Para checkout avulso via payment link
+
+- `system`
+- `system_payment_id`
+- `description`
+- `value`
+- `billing_type` (recomendado: `UNDEFINED`)
+- `due_date_limit_days`
 - `webhook_link`
 
 ## Cuidados
@@ -33,18 +46,36 @@ Este guia serve para conectar um novo produto da Neectify ao Billing Core sem du
 ## Pagamentos avulsos
 
 > [!IMPORTANT]
-> **Vínculo de Cliente (Asaas):**
-> O campo `customer_provider_id` é obrigatório para chamar `POST /v1/payments`. O SaaS **deve** criar o cliente ou reutilizar o ID associado ao CPF/CNPJ.
+> **Escolha do endpoint:**
+> Use `POST /v1/payment-links` para checkout avulso sem customer previo. Use `POST /v1/payments` somente quando o produto ja possui `customer_provider_id` e precisa criar uma cobranca vinculada a esse customer.
+
+### Checkout avulso sem customer previo
+
+Fluxo recomendado para creditos, pacotes e pedidos pontuais em que o comprador deve preencher CPF/CNPJ, nome e e-mail no checkout Asaas.
+
+1. Chamar `POST /v1/payment-links` com `Idempotency-Key`.
+2. Enviar `billing_type=UNDEFINED` para permitir que o comprador escolha PIX, boleto ou cartao.
+3. Ler `job_id` e consultar `GET /v1/jobs/{job_id}` ate `status=completed`.
+4. Redirecionar o usuario para `result.checkout_url`.
+5. Receber webhook interno assinado com `event=PAYMENT_STATUS_UPDATED`.
+6. Quando `payment_status=paid` ou `confirmed`, liberar o recurso comprado no SaaS.
+7. Se necessario, consultar `GET /v1/payments/{payment_id}` respeitando 10 segundos entre chamadas para o mesmo pagamento.
+
+Scopes minimos: `payments:create`, `payments:read`, `jobs:read`.
+
+### Pagamento avulso legado com customer
 
 1. **Obter o `customer_provider_id`:**
-   - Verifique se o usuário já possui um `customer_provider_id` salvo localmente no banco de dados do seu SaaS.
-   - Se **não possuir**, chame `POST /v1/customers` passando os dados cadastrais (CPF ou CNPJ) e salve o `provider_customer_id` retornado associado a esse usuário. O endpoint é idempotente: se o CPF/CNPJ já existir no Asaas, ele retornará o ID do cadastro existente de forma segura.
-   - Se **já possuir**, reutilize o ID persistido localmente nas chamadas subsequentes sem chamar o endpoint de criação novamente.
+   - Verifique se o usuario ja possui um `customer_provider_id` salvo localmente no banco de dados do seu SaaS.
+   - Se **nao possuir**, chame `POST /v1/customers` passando os dados cadastrais (CPF ou CNPJ) e salve o `provider_customer_id` retornado associado a esse usuario. O endpoint e idempotente: se o CPF/CNPJ ja existir no Asaas, ele retornara o ID do cadastro existente de forma segura.
+   - Se **ja possuir**, reutilize o ID persistido localmente nas chamadas subsequentes sem chamar o endpoint de criacao novamente.
 2. Chamar `POST /v1/payments` com `Idempotency-Key` enviando o `customer_provider_id`.
 3. Ler `job_id` e consultar `GET /v1/jobs/{job_id}` ate obter o resultado.
 4. Redirecionar o usuario para `checkout_url`.
 5. Receber webhook interno assinado para mudancas de status.
 6. Se necessario, consultar `GET /v1/payments/{payment_id}` respeitando 10 segundos entre chamadas para o mesmo pagamento.
+
+Scopes minimos: `customers:create`, `payments:create`, `payments:read`, `jobs:read`.
 
 ## Quando um novo gateway entrar
 

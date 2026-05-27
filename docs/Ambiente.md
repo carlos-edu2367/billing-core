@@ -66,12 +66,15 @@
 
 ## Scopes internos
 
+- `customers:create`
 - `subscriptions:create`
 - `subscriptions:cancel`
 - `payments:create`
 - `payments:read`
 - `jobs:read`
 - `metrics:read`
+
+`payments:create` cobre tanto `POST /v1/payments` quanto `POST /v1/payment-links`. Para um produto que usa apenas checkout avulso via payment link, `customers:create` nao e necessario. Para assinaturas, mantenha `customers:create`.
 
 ## Bootstrap recomendado
 

@@ -38,6 +38,12 @@ class PaymentRepositoryINFRA(PaymentRepository):
         r = await self.session.execute(stmt)
         r = r.scalars().one_or_none()
         return r.to_domain() if r else None
+
+    async def get_by_external_reference(self, external_reference: str) -> Payment | None:
+        stmt = select(PaymentModel).where(PaymentModel.external_reference == external_reference)
+        r = await self.session.execute(stmt)
+        r = r.scalars().one_or_none()
+        return r.to_domain() if r else None
     
     async def list_by_system(self, system: System, limit: int, page: int) -> list[Payment]:
         stmt = select(PaymentModel).where(PaymentModel.from_system == system).limit(limit).offset((page - 1) * limit)

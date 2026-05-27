@@ -35,7 +35,14 @@ class FakePaymentRepo:
         self.saved: list[Payment] = []
 
     async def get_by_provider_id(self, provider_payment_id):
-        return self.existing
+        if self.existing and self.existing.provider_payment_id == provider_payment_id:
+            return self.existing
+        return None
+
+    async def get_by_external_reference(self, external_reference):
+        if self.existing and self.existing.external_reference == external_reference:
+            return self.existing
+        return None
 
     async def save(self, payment: Payment):
         if payment.id is None:
@@ -362,3 +369,36 @@ async def test_process_webhook_marks_standalone_payment_as_confirmed():
 
     assert payment.payment_status == PaymentStatus.CONFIRMED
     assert response.event.value == "PAYMENT_STATUS_UPDATED"
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_finds_payment_link_charge_by_external_reference_and_updates_provider_id():
+    payment = make_standalone_payment(provider_payment_id="pml_123")
+    repo = FakePaymentRepo(existing=payment)
+    service = ProcessWebhookService(
+        payment_repo=repo,
+        sub_repo=FakeSubscriptionRepo(None),
+        uow=FakeUow(),
+        webhook_event_repo=FakeWebhookEventRepo(),
+    )
+    payload = WebhookPayload(
+        event=EventType.PAYMENT_RECEIVED,
+        source_event_id="evt-payment-link-1",
+        details=Details(
+            id="pay_456",
+            subscription=None,
+            status="RECEIVED",
+            value=Decimal("79.90"),
+            net_value=Decimal("77.90"),
+            payment_date=datetime.now(timezone.utc),
+            external_reference="payment:neectify_shop:order-123",
+        ),
+    )
+
+    response = await service.execute(GatewayProvider.ASAAS, payload)
+
+    assert response.event.value == "PAYMENT_STATUS_UPDATED"
+    assert response.payment_id == payment.id
+    assert payment.provider_payment_id == "pay_456"
+    assert payment.payment_status == PaymentStatus.PAID
+    assert repo.saved[-1].provider_payment_id == "pay_456"
