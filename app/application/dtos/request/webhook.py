@@ -22,13 +22,13 @@ class EventType(str, Enum):
 class Details(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    id: str | None
-    subscription: str | None
-    status: str | None
-    value: Decimal | None
-    net_value: Decimal | None
-    payment_date: datetime | None
-    external_reference: str | None
+    id: str | None = None
+    subscription: str | None = None
+    status: str | None = None
+    value: Decimal | None = None
+    net_value: Decimal | None = None
+    payment_date: datetime | None = None
+    external_reference: str | None = None
 
     @field_validator("payment_date", mode="before")
     @classmethod
