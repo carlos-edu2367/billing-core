@@ -1,6 +1,6 @@
 from app.infra.db.setup import Base
 from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy import Index, String
+from sqlalchemy import DateTime, Index, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
 from uuid import UUID, uuid4
 from app.infra.db.types.enum_value_type import EnumValueType
@@ -23,7 +23,7 @@ class WebhookEventModel(Base):
     event_type: Mapped[str] = mapped_column(String, nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     processed: Mapped[bool] = mapped_column(nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
     def to_domain(self) -> WebhookEvent:
         return WebhookEvent(
