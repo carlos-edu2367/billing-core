@@ -46,3 +46,23 @@ def test_normalized_webhook_payload_accepts_missing_optional_detail_keys():
     )
 
     assert payload.details.subscription is None
+
+
+def test_normalized_webhook_payload_accepts_iso_datetime_payment_date_with_z():
+    payload = WebhookPayload.model_validate(
+        {
+            "event": "PAYMENT_RECEIVED",
+            "source_event_id": "evt-1",
+            "details": {
+                "id": "pay_gq4ks2z4kyqncpqy",
+                "subscription": None,
+                "status": "RECEIVED",
+                "value": 5.0,
+                "net_value": 4.01,
+                "payment_date": "2026-05-27T00:00:00Z",
+                "external_reference": "payment:marketfy:afdaa006-7751-4d50-9b5d-65e062e59f15",
+            },
+        }
+    )
+
+    assert payload.details.payment_date.isoformat() == "2026-05-27T00:00:00+00:00"

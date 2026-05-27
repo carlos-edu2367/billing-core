@@ -39,8 +39,13 @@ class Details(BaseModel):
         if isinstance(value, date):
             return datetime.combine(value, time.min, tzinfo=timezone.utc)
 
-        parsed = date.fromisoformat(value)
-        return datetime.combine(parsed, time.min, tzinfo=timezone.utc)
+        normalized = str(value).replace("Z", "+00:00")
+        if "T" in normalized:
+            parsed_datetime = datetime.fromisoformat(normalized)
+            return parsed_datetime if parsed_datetime.tzinfo else parsed_datetime.replace(tzinfo=timezone.utc)
+
+        parsed_date = date.fromisoformat(normalized)
+        return datetime.combine(parsed_date, time.min, tzinfo=timezone.utc)
 
 
 class WebhookPayload(BaseModel):
