@@ -328,10 +328,13 @@ POST https://api.food.neectify.com/billing/webhook
 {
   "event":                   "PAYMENT_RECEIVED",
   "subscription_id":         "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+  "system_sub_id":           "sub_food_user42_mensal",
   "subscription_expires_at": "2026-07-01",
   "payment_date":            "2026-06-01"
 }
 ```
+
+> `subscription_id` é o ID interno do Billing Core; `system_sub_id` é o ID que **você** enviou na criação (ex.: `store_id`). Use o que for mais conveniente para localizar a assinatura no seu sistema.
 
 ### Eventos
 

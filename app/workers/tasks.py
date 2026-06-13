@@ -74,6 +74,7 @@ async def _build_internal_delivery(
     payload = SendInternalWebhookSubscription(
         event=result.event,
         subscription_id=subscription.id,
+        system_sub_id=subscription.system_subscription_id,
         subscription_expires_at=subscription.expires_at.date(),
         payment_date=payment_date,
     )

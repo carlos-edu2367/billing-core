@@ -25,6 +25,10 @@ class SendInternalWebhookSubscription(BaseModel):
 
     event: InternalEventType
     subscription_id: UUID
+    # ID da assinatura no sistema de origem (ex.: store_id no Neectify Food).
+    # Permite ao consumidor resolver a assinatura sem depender de um mapeamento
+    # prévio do subscription_id interno do Billing Core.
+    system_sub_id: str
     subscription_expires_at: date
     payment_date: date | None
 
