@@ -37,14 +37,14 @@ Registra um novo cliente no provedor de pagamento (Asaas). Este endpoint é **id
 
 > [!IMPORTANT]
 > **Quando usar `POST /v1/customers`:**
-> Assinaturas (`POST /v1/subscriptions`) e pagamentos avulsos legados (`POST /v1/payments`) ainda precisam de `customer_provider_id`.
-> Para checkout avulso sem customer previo, use `POST /v1/payment-links`; nesse fluxo o Asaas coleta os dados do comprador no checkout.
+> Assinaturas (`POST /v1/subscriptions`) precisam de `customer_provider_id`.
+> O checkout criado por `POST /v1/payments` coleta os dados do comprador no Asaas e não recebe customer prévio.
 >
-> Para fluxos que ainda usam customer:
+> Para assinaturas:
 > 1. Salve o `provider_customer_id` retornado no banco de dados local do seu SaaS, associado ao cadastro do usuário.
-> 2. Antes de criar uma cobrança avulsa, verifique se o usuário já possui este ID.
+> 2. Antes de criar uma assinatura, verifique se o usuário já possui este ID.
 > 3. Caso não possua, chame `POST /v1/customers` passando o CPF/CNPJ do usuário, salve o ID recebido localmente, e use-o na chamada de pagamento.
-> 4. Caso já possua, **reutilize o ID salvo** diretamente no payload de `POST /v1/payments`.
+> 4. Caso já possua, **reutilize o ID salvo** diretamente no payload de `POST /v1/subscriptions`.
 
 #### Auth
 
@@ -192,114 +192,56 @@ Consulta o estado do job associado ao sistema autenticado.
 
 ### `POST /v1/payments`
 
-Cria um pagamento avulso de forma assincrona e idempotente usando um customer Asaas ja existente.
-
-Para checkout avulso sem cadastro previo do comprador, prefira `POST /v1/payment-links`.
+Cria um checkout Asaas assíncrono e idempotente. Não cria uma cobrança direta e não recebe `customer_provider_id`, `billing_type` ou data de vencimento.
 
 #### Auth
 
-- obrigatoria
+- obrigatória
 - scope: `payments:create`
-- header obrigatorio: `Idempotency-Key`
-
-#### Payload
-
-```json
-{
-  "customer_provider_id": "cus_123",
-  "value": "79.90",
-  "billing_type": "UNDEFINED",
-  "due_date": "2026-06-10",
-  "description": "Pedido 123",
-  "system": "neectify_shop",
-  "system_payment_id": "order-123",
-  "webhook_link": "https://hooks.neectify.local/billing/payment"
-}
-```
-
-Para permitir que o pagador escolha a forma de pagamento, envie `billing_type=UNDEFINED`.
-O endpoint regular de cobranca do Asaas nao aceita multiplos `billingType` em uma unica cobranca.
-
-#### Resposta `202`
-
-```json
-{
-  "job_id": "job-123",
-  "message": "Pagamento enviado para processamento."
-}
-```
-
-O resultado do job contem `payment_id`, `checkout_url`, `payment_status`, `billing_type`, `value` e `due_date`.
-
-### `POST /v1/payment-links`
-
-Cria um link de checkout Asaas de forma assincrona e idempotente. Este fluxo nao exige `customer_provider_id`: o comprador informa nome, CPF/CNPJ e e-mail diretamente no checkout do Asaas.
-
-Use este endpoint para compras avulsas em que o produto nao deve criar customer antes do pagamento, como checkout de creditos fiscais do Marketfy.
-
-#### Auth
-
-- obrigatoria
-- scope: `payments:create`
-- header obrigatorio: `Idempotency-Key`
+- header obrigatório: `Idempotency-Key`
 
 #### Payload
 
 ```json
 {
   "value": "72.00",
-  "billing_type": "UNDEFINED",
-  "description": "Creditos NF-e - pack_100",
-  "due_date_limit_days": 3,
+  "description": "Créditos NF-e - pack_100",
   "system": "marketfy",
   "system_payment_id": "550e8400-e29b-41d4-a716-446655440000",
-  "webhook_link": "https://api-marketfy.neectify.com/api/v1/webhooks/billing-core"
+  "webhook_link": "https://api-marketfy.neectify.com/api/v1/webhooks/billing-core",
+  "minutes_to_expire": 30,
+  "items": [{
+    "external_reference": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "100 créditos NF-e",
+    "description": "Créditos para emissão fiscal",
+    "quantity": 1,
+    "value": "72.00"
+  }],
+  "success_url": "https://app.marketfy.com/billing/success",
+  "cancel_url": "https://app.marketfy.com/billing/cancel",
+  "expired_url": "https://app.marketfy.com/billing/expired"
 }
 ```
 
-#### Campos
-
-| Campo | Tipo | Obrigatorio | Descricao |
-| --- | --- | --- | --- |
-| `value` | decimal | sim | Valor do checkout em reais (> 0) |
-| `billing_type` | enum | nao | `UNDEFINED` por padrao; permite PIX, boleto ou cartao no checkout Asaas |
-| `description` | string | sim | Nome/descricao exibida no checkout (max. 255 caracteres) |
-| `due_date_limit_days` | int | nao | Dias para pagamento apos geracao da cobranca; padrao `3` |
-| `system` | enum | sim | Deve ser igual ao `X-System` autenticado |
-| `system_payment_id` | string | sim | ID interno unico do pedido/pacote no produto chamador |
-| `webhook_link` | string | sim | Endpoint HTTPS do produto para receber atualizacoes normalizadas |
+`minutes_to_expire` aceita de 10 a 1440. A soma de `items` deve ser igual a `value`; o primeiro item é usado como referência externa do checkout. As três URLs de retorno devem usar host presente em `ALLOWED_CHECKOUT_REDIRECT_HOSTS`.
 
 #### Resposta `202`
 
 ```json
 {
   "job_id": "job-123",
-  "message": "Checkout enviado para criacao."
+  "message": "Checkout enviado para criação."
 }
 ```
 
-Quando o job completar, `GET /v1/jobs/{job_id}` retorna:
-
-```json
-{
-  "job_id": "job-123",
-  "status": "completed",
-  "result": {
-    "payment_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-    "checkout_url": "https://www.asaas.com/c/pml_000005219613",
-    "payment_status": "pending"
-  }
-}
-```
+Quando concluído, `GET /v1/jobs/{job_id}` inclui `checkout_id`, `checkout_url`, `payment_id` e `payment_status` no resultado.
 
 #### Regras importantes
 
-- `customer_provider_id` nao deve ser enviado.
-- A mesma `Idempotency-Key` com o mesmo payload retorna o mesmo `job_id`.
-- A mesma `Idempotency-Key` com payload diferente retorna `409 conflict`.
-- `billing_type=DEBIT_CARD` nao e aceito.
-- O Billing Core cria `externalReference` no formato `payment:{system}:{system_payment_id}` para correlacionar o webhook do Asaas.
-- O registro local nasce com `provider_payment_id = pml_xxx`. Quando o webhook de pagamento chega com `pay_xxx`, o Billing Core localiza por `externalReference` e atualiza o `provider_payment_id`.
+- A mesma `Idempotency-Key` com o mesmo payload retorna o mesmo `job_id`; com payload distinto retorna `409 conflict`.
+- O checkout Asaas usa PIX e cartão; os dados do comprador são coletados pelo Asaas.
+- As URLs de retorno só guiam a interface. Elas **nunca** concedem acesso, crédito ou outro benefício.
+- A confirmação financeira é o webhook Asaas `CHECKOUT_PAID`, que gera a atualização interna assinada.
 
 ### `GET /v1/payments/{payment_id}`
 

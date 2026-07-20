@@ -1,497 +1,61 @@
 # Guia de Integração — Billing Core
 
-Documentação para integrar um produto Neectify ao Billing Core.
+> Base URL de produção: `https://api.billing.neectify.com`
 
-> **Base URL (produção):** `https://api.billing.neectify.com`
+## Criar checkout
 
----
-
-## Índice
-
-1. [Visão geral do fluxo](#1-visão-geral-do-fluxo)
-2. [Configuração no Billing Core](#2-configuração-no-billing-core)
-3. [Criar cliente](#3-criar-cliente)
-4. [Criar assinatura](#4-criar-assinatura)
-5. [Criar checkout avulso sem customer](#5-criar-checkout-avulso-sem-customer)
-6. [Consultar job](#6-consultar-job)
-7. [Receber webhook interno](#7-receber-webhook-interno)
-8. [Checklist de go-live](#8-checklist-de-go-live)
-9. [Referencia de erros](#9-referencia-de-erros)
-
----
-
-## 1. Visão geral do fluxo
-
-```
-Seu produto                  Billing Core                        Asaas
-     │                            │                                │
-     │─ POST /v1/customers ──────>│─ POST /v3/customers ─────────>│
-     │<─ { provider_customer_id } │<─ { id: "cus_xxx" } ──────────│
-     │                            │                                │
-     │─ POST /v1/subscriptions ──>│─ POST /v3/subscriptions ─────>│
-     │<─ { job_id }               │<─ { id: "sub_xxx" } ──────────│
-     │                            │                                │
-     │─ GET /v1/jobs/{job_id} ───>│                                │
-     │<─ { status: "completed" }  │                                │
-     │                            │                                │
-     │<── POST /billing/webhook ──│  (pagamento confirmado)        │
-     │  { event, expires_at, … }  │                                │
-```
-
-A criacao de assinatura e **assincrona**: o `POST /v1/subscriptions` retorna imediatamente um `job_id`. Use o `GET /v1/jobs/{job_id}` para saber quando terminou.
-
-Para compras avulsas sem cadastro previo do comprador, use `POST /v1/payment-links`. Nesse fluxo o Billing Core cria um link de checkout no Asaas, retorna `checkout_url` no resultado do job e o comprador informa os dados diretamente no checkout Asaas.
-
----
-
-## 2. Configuração no Billing Core
-
-Antes de fazer qualquer chamada, três coisas precisam estar configuradas pelo time do Billing Core:
-
-### 2.1 Registrar o sistema no enum `System`
-
-**Arquivo:** `app/domain/enums/system.py`
-
-```python
-class System(Enum):
-    MARKETFY      = "marketfy"
-    NEECTIFY_SHOP = "neectify_shop"
-    NEECTIFY_FOOD = "neectify_food"   # ✅ já adicionado
-```
-
-> Para novos produtos, adicione uma entrada seguindo o mesmo padrão.
-
-### 2.2 Credenciais no ambiente de produção
-
-Adicionar a entrada do produto no `INTERNAL_API_CLIENTS`:
+`POST /v1/payments` cria um checkout Asaas de modo assíncrono. Envie os headers `X-System`, `X-API-Key` e `Idempotency-Key`.
 
 ```json
 {
-  "neectify_food": {
-    "api_key": "<api-key-gerada-para-o-food>",
-    "scopes": ["customers:create", "subscriptions:create", "payments:create", "payments:read", "jobs:read"]
-  }
-}
-```
-
-Para produtos que usam somente checkout avulso via payment link, `customers:create` nao e necessario. Para assinaturas, mantenha `customers:create`, porque assinatura recorrente ainda precisa de customer Asaas.
-
-### 2.3 Liberar o host do webhook interno
-
-```env
-ALLOWED_INTERNAL_WEBHOOK_HOSTS=["api.food.neectify.com", "api.shop.neectify.com"]
-```
-
-O Billing Core rejeita qualquer `webhook_link` cujo hostname não esteja nessa lista.
-
----
-
-## 3. Criar cliente
-
-Toda assinatura requer um cliente previamente cadastrado. Chame esse endpoint **uma vez por usuário** e persista o `provider_customer_id` retornado.
-
-> **Escopo necessário:** `customers:create` — certifique-se de que ele está na lista `scopes` do `INTERNAL_API_CLIENTS` do seu sistema.
-
-### Request
-
-```http
-POST https://api.billing.neectify.com/v1/customers
-Content-Type: application/json
-X-System:     neectify_food
-X-API-Key:    <sua-api-key>
-```
-
-```json
-{
-  "nome_completo":      "João Silva",
-  "email":              "joao@exemplo.com",
-  "cpf":                "390.533.447-05",
-  "system_customer_id": "user_42",
-  "system":             "neectify_food"
-}
-```
-
-> Use `cnpj` no lugar de `cpf` para pessoas jurídicas. Exatamente um dos dois deve ser enviado.
-
-### Response `201`
-
-```json
-{
-  "provider_customer_id": "cus_000005113076"
-}
-```
-
-### Comportamento de idempotência
-
-Se um cliente com o mesmo CPF/CNPJ já existir no Asaas, o Billing Core reutiliza o cadastro existente e retorna o mesmo `provider_customer_id`. Seguro chamar mais de uma vez.
-
----
-
-## 4. Criar assinatura
-
-### Request
-
-```http
-POST https://api.billing.neectify.com/v1/subscriptions
-Content-Type:    application/json
-X-System:        neectify_food
-X-API-Key:       <sua-api-key>
-Idempotency-Key: <chave-unica-por-tentativa>
-```
-
-```json
-{
-  "customer_provider_id": "cus_000005113076",
-  "value":                "49.90",
-  "subscription_type":    "MONTHLY",
-  "next_due_date":        "2026-06-01",
-  "description":          "Plano Mensal - Neectify Food",
-  "system":               "neectify_food",
-  "system_sub_id":        "sub_food_user42_mensal",
-  "expires_at":           "2026-07-01T00:00:00Z",
-  "webhook_link":         "https://api.food.neectify.com/billing/webhook"
-}
-```
-
-### Campos
-
-| Campo | Tipo | Obrigatório | Descrição |
-|---|---|---|---|
-| `customer_provider_id` | string | sim | ID Asaas retornado pelo `/v1/customers` |
-| `value` | decimal | sim | Valor em reais (> 0) |
-| `subscription_type` | enum | sim | `MONTHLY`, `SEMIANNUALLY` ou `YEARLY` |
-| `next_due_date` | date | não | Data da primeira cobrança (`YYYY-MM-DD`). Se omitido, usa a data atual. |
-| `description` | string | sim | Descrição interna (máx. 255 caracteres) |
-| `system` | enum | sim | Deve ser igual ao sistema do header `X-System` |
-| `system_sub_id` | string | sim | Seu ID único da assinatura |
-| `expires_at` | datetime ISO 8601 | sim | Expiração inicial. Atualizado automaticamente a cada pagamento. |
-| `webhook_link` | string | sim | Endpoint HTTPS que receberá os eventos normalizados |
-
-### Header `Idempotency-Key`
-
-Obrigatório. Use um valor único por tentativa de criação (ex.: `sub_food_user42_mensal_2026_05`). Se chamar novamente com a mesma chave e o mesmo payload, recebe o mesmo `job_id` sem criar uma segunda assinatura.
-
-### Response `202`
-
-```json
-{
-  "job_id":  "arq:job:7f3a1c...",
-  "message": "Assinatura enviada para processamento."
-}
-```
-
----
-
-## 5. Criar checkout avulso sem customer
-
-Use `POST /v1/payment-links` para vendas avulsas em que o comprador deve preencher os proprios dados no checkout Asaas. Esse fluxo e recomendado para compra de creditos, pacotes ou pedidos pontuais que nao exigem assinatura.
-
-Ao contrario de `POST /v1/payments`, este endpoint nao recebe `customer_provider_id`.
-
-### Request
-
-```http
-POST https://api.billing.neectify.com/v1/payment-links
-Content-Type:    application/json
-X-System:        marketfy
-X-API-Key:       <sua-api-key>
-Idempotency-Key: <chave-unica-por-pedido>
-```
-
-```json
-{
-  "value":                "72.00",
-  "billing_type":         "UNDEFINED",
-  "description":          "Creditos NF-e - pack_100",
-  "due_date_limit_days":  3,
-  "system":               "marketfy",
-  "system_payment_id":    "550e8400-e29b-41d4-a716-446655440000",
-  "webhook_link":         "https://api-marketfy.neectify.com/api/v1/webhooks/billing-core"
-}
-```
-
-### Campos
-
-| Campo | Tipo | Obrigatorio | Descricao |
-|---|---|---|---|
-| `value` | decimal | sim | Valor do checkout em reais (> 0) |
-| `billing_type` | enum | nao | Use `UNDEFINED` para o comprador escolher PIX, boleto ou cartao |
-| `description` | string | sim | Nome exibido no checkout e usado como descricao local |
-| `due_date_limit_days` | int | nao | Dias para vencimento da cobranca gerada; padrao `3` |
-| `system` | enum | sim | Deve ser igual ao header `X-System` |
-| `system_payment_id` | string | sim | ID unico do pedido/pacote no produto chamador |
-| `webhook_link` | string | sim | Endpoint HTTPS que recebera o status normalizado |
-
-### Response `202`
-
-```json
-{
-  "job_id":  "arq:job:7f3a1c...",
-  "message": "Checkout enviado para criacao."
-}
-```
-
-### Resultado do job
-
-```json
-{
-  "job_id": "arq:job:7f3a1c...",
-  "status": "completed",
-  "result": {
-    "payment_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-    "checkout_url": "https://www.asaas.com/c/pml_000005219613",
-    "payment_status": "pending"
-  }
-}
-```
-
-Redirecione o usuario para `result.checkout_url`. Quando o comprador pagar, o Asaas envia webhook de cobranca ao Billing Core. O Billing Core localiza o pagamento por `externalReference`, atualiza o status local e envia um webhook interno para o `webhook_link`.
-
-### Payload do webhook interno para pagamento avulso
-
-```json
-{
-  "event": "PAYMENT_STATUS_UPDATED",
-  "payment_id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "system_payment_id": "550e8400-e29b-41d4-a716-446655440000",
-  "payment_status": "paid",
   "value": "72.00",
-  "paid_date": "2026-05-27",
-  "checkout_url": "https://www.asaas.com/c/pml_000005219613"
+  "description": "Créditos NF-e - pack_100",
+  "system": "marketfy",
+  "system_payment_id": "550e8400-e29b-41d4-a716-446655440000",
+  "webhook_link": "https://api-marketfy.neectify.com/api/v1/webhooks/billing-core",
+  "minutes_to_expire": 30,
+  "items": [{
+    "external_reference": "550e8400-e29b-41d4-a716-446655440000",
+    "name": "100 créditos NF-e",
+    "description": "Créditos para emissão fiscal",
+    "quantity": 1,
+    "value": "72.00"
+  }],
+  "success_url": "https://app.marketfy.com/billing/success",
+  "cancel_url": "https://app.marketfy.com/billing/cancel",
+  "expired_url": "https://app.marketfy.com/billing/expired"
 }
 ```
 
-## 6. Consultar job
+O retorno imediato é `202` com `job_id`. Consulte `GET /v1/jobs/{job_id}` até `completed`; o resultado contém a URL segura do checkout. Repetir a mesma chave e o mesmo corpo retorna o mesmo job; reutilizar a chave com corpo distinto retorna `409`.
 
-Use o `job_id` retornado por `/v1/subscriptions`, `/v1/payment-links` ou outros endpoints assincronos para acompanhar o processamento.
+O checkout não recebe customer prévio nem dados de cobrança direta. `minutes_to_expire` deve ficar entre 10 e 1440; a soma de `items` deve igualar `value`.
 
-### Request
+## Configuração
 
-```http
-GET https://api.billing.neectify.com/v1/jobs/arq:job:7f3a1c...
-X-System:  neectify_food
-X-API-Key: <sua-api-key>
-```
+O cliente interno deve ter `payments:create`, `payments:read` e `jobs:read`. Registre o host do callback assinado em `ALLOWED_INTERNAL_WEBHOOK_HOSTS` e os hosts HTTPS das três URLs em `ALLOWED_CHECKOUT_REDIRECT_HOSTS`.
 
-### Response `200`
+Assinaturas continuam em `POST /v1/subscriptions` e exigem customer criado previamente em `POST /v1/customers`.
 
-```json
-{
-  "job_id":      "arq:job:7f3a1c...",
-  "status":      "completed",
-  "job_name":    "create_subscription_worker",
-  "attempt":     1,
-  "max_tries":   3,
-  "created_at":  "2026-05-20T10:00:00Z",
-  "started_at":  "2026-05-20T10:00:01Z",
-  "finished_at": "2026-05-20T10:00:02Z",
-  "error_code":  null,
-  "error_message": null
-}
-```
+## Evento e liberação de benefício
 
-### Status possíveis
+As URLs `success_url`, `cancel_url` e `expired_url` são retornos de navegador, não uma fonte de verdade financeira. Nunca conceda créditos, acesso ou pedido a partir delas.
 
-| Status | Significado | Ação |
-|---|---|---|
-| `queued` | Aguardando worker disponível | Re-consultar em alguns segundos |
-| `processing` | Em execução | Aguardar |
-| `completed` | Sucesso — assinatura criada | Prosseguir; aguardar webhook de pagamento |
-| `retrying` | Falha transitória, tentando novamente | Aguardar |
-| `failed` | Falha terminal | Verificar `error_message` e alertar o time |
+Configure no Asaas todos os eventos abaixo. O Billing Core deduplica os recebimentos e entrega a atualização interna assinada ao `webhook_link`.
 
-### Estratégia de polling recomendada
+| Evento Asaas | Estado local | Libera benefício |
+| --- | --- | --- |
+| `CHECKOUT_CREATED` | `pending` | não |
+| `CHECKOUT_CANCELED` | `canceled` | não |
+| `CHECKOUT_EXPIRED` | `expired` | não |
+| `CHECKOUT_PAID` | `paid` | sim |
 
-```
-T+1s  → consultar
-T+3s  → consultar
-T+10s → consultar
-T+30s → consultar
-T+60s → tratar como timeout e acionar suporte
-```
+Valide `X-Webhook-Signature-256` com o segredo compartilhado antes de processar uma entrega interna. Aplique a operação de forma idempotente usando a referência do seu pedido/pacote.
 
----
+## Go-live
 
-## 7. Receber webhook interno
-
-Apos cada evento relevante de pagamento ou assinatura, o Billing Core envia um `POST` para o `webhook_link` informado na criacao da assinatura ou do payment link.
-
-### Endpoint esperado no seu produto
-
-```
-POST https://api.food.neectify.com/billing/webhook
-```
-
-### Payload recebido para assinatura
-
-```json
-{
-  "event":                   "PAYMENT_RECEIVED",
-  "subscription_id":         "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "system_sub_id":           "sub_food_user42_mensal",
-  "subscription_expires_at": "2026-07-01",
-  "payment_date":            "2026-06-01"
-}
-```
-
-> `subscription_id` é o ID interno do Billing Core; `system_sub_id` é o ID que **você** enviou na criação (ex.: `store_id`). Use o que for mais conveniente para localizar a assinatura no seu sistema.
-
-### Eventos
-
-| `event` | Quando dispara | `payment_date` |
-|---|---|---|
-| `PAYMENT_RECEIVED` | Pagamento confirmado no Asaas | Preenchido com a data do pagamento |
-| `SUBSCRIPTION_INACTIVATED` | Assinatura cancelada ou inativada no Asaas | `null` |
-| `PAYMENT_STATUS_UPDATED` | Pagamento avulso mudou de status | Consulte `paid_date` no payload de pagamento |
-
-### Validar a assinatura HMAC
-
-O Billing Core assina cada requisição com `HMAC-SHA256`. **Valide sempre antes de processar** — rejeite com `401` se a assinatura não bater.
-
-O segredo compartilhado é o valor de `INTERNAL_WEBHOOK_SIGNATURE` configurado no Billing Core. Solicite ao time de infra.
-
-```python
-# Python / FastAPI
-import hmac, hashlib, base64, json
-from fastapi import Request, Response
-
-BILLING_WEBHOOK_SECRET = "segredo-compartilhado-com-o-billing-core"
-
-def verify_billing_signature(raw_body: bytes, signature_header: str) -> bool:
-    # O Billing Core serializa o payload com sort_keys + sem espaços
-    payload_normalized = json.dumps(
-        json.loads(raw_body),
-        sort_keys=True,
-        separators=(",", ":")
-    )
-    digest = hmac.new(
-        BILLING_WEBHOOK_SECRET.encode("utf-8"),
-        payload_normalized.encode("utf-8"),
-        hashlib.sha256,
-    ).digest()
-    expected = base64.b64encode(digest).decode("utf-8")
-    return hmac.compare_digest(expected, signature_header)
-
-@app.post("/billing/webhook")
-async def billing_webhook(request: Request):
-    raw = await request.body()
-    signature = request.headers.get("X-Webhook-Signature-256", "")
-
-    if not verify_billing_signature(raw, signature):
-        return Response(status_code=401)
-
-    body = json.loads(raw)
-    event = body["event"]
-    subscription_id = body["subscription_id"]
-    expires_at = body["subscription_expires_at"]   # "YYYY-MM-DD"
-    payment_date = body.get("payment_date")        # "YYYY-MM-DD" ou null
-
-    if event == "PAYMENT_RECEIVED":
-        # Liberar/renovar acesso do usuário até expires_at
-        await activate_subscription(subscription_id, expires_at)
-
-    elif event == "SUBSCRIPTION_INACTIVATED":
-        # Revogar acesso
-        await deactivate_subscription(subscription_id)
-
-    # Responda 2xx em até 30s — qualquer coisa fora disso gera retry
-    return Response(status_code=200)
-```
-
-```typescript
-// Node.js / Express
-import crypto from "crypto";
-
-const BILLING_WEBHOOK_SECRET = "segredo-compartilhado-com-o-billing-core";
-
-function verifyBillingSignature(rawBody: Buffer, signatureHeader: string): boolean {
-  const payloadNormalized = JSON.stringify(JSON.parse(rawBody.toString()), Object.keys(JSON.parse(rawBody.toString())).sort());
-  const digest = crypto
-    .createHmac("sha256", BILLING_WEBHOOK_SECRET)
-    .update(payloadNormalized)
-    .digest("base64");
-  return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(signatureHeader));
-}
-
-app.post("/billing/webhook", express.raw({ type: "application/json" }), (req, res) => {
-  const signature = req.headers["x-webhook-signature-256"] as string;
-
-  if (!verifyBillingSignature(req.body, signature)) {
-    return res.status(401).send();
-  }
-
-  const body = JSON.parse(req.body.toString());
-
-  if (body.event === "PAYMENT_RECEIVED") {
-    // liberar acesso até body.subscription_expires_at
-  } else if (body.event === "SUBSCRIPTION_INACTIVATED") {
-    // revogar acesso
-  }
-
-  res.status(200).send();
-});
-```
-
-### Política de retry do Billing Core
-
-Se o seu endpoint não responder `2xx` em 30 segundos, o Billing Core tentará novamente **até 5 vezes** com backoff progressivo. Após a 5ª falha, a entrega vai para dead letter e precisará de intervenção manual.
-
----
-
-## 8. Checklist de go-live
-
-```
-CONFIGURAÇÃO NO BILLING CORE
-[x] NEECTIFY_FOOD adicionado ao enum System
-[ ] Entrada no INTERNAL_API_CLIENTS com api_key e escopos corretos
-    assinaturas: customers:create, subscriptions:create, jobs:read
-    checkout avulso: payments:create, payments:read, jobs:read
-[ ] Host do webhook adicionado em ALLOWED_INTERNAL_WEBHOOK_HOSTS
-    ex: api.food.neectify.com
-
-CONFIGURAÇÃO NO SEU PRODUTO
-[ ] provider_customer_id salvo no banco de dados por usuário
-    obrigatorio para assinaturas e /v1/payments; nao usado em /v1/payment-links
-[ ] Endpoint HTTPS em api.food.neectify.com/billing/webhook implementado
-[ ] Validação HMAC do X-Webhook-Signature-256 implementada e testada
-[ ] Endpoint responde 2xx em até 30s
-
-TESTES END-TO-END (em sandbox)
-[ ] POST /v1/customers → retorna provider_customer_id
-[ ] POST /v1/subscriptions com Idempotency-Key → retorna job_id
-[ ] POST /v1/payment-links com Idempotency-Key → retorna job_id
-[ ] Repetir POST com mesma Idempotency-Key → retorna mesmo job_id
-[ ] GET /v1/jobs/{job_id} → status "completed"
-[ ] Payment link completo retorna result.checkout_url
-[ ] Webhook PAYMENT_RECEIVED recebido e assinatura validada
-[ ] Webhook PAYMENT_STATUS_UPDATED recebido para pagamento avulso
-[ ] Acesso do usuário liberado/atualizado após PAYMENT_RECEIVED
-[ ] Webhook SUBSCRIPTION_INACTIVATED recebido
-[ ] Acesso revogado após SUBSCRIPTION_INACTIVATED
-```
-
----
-
-## 9. Referencia de erros
-
-| HTTP | `error.code` | Causa | Ação |
-|---|---|---|---|
-| `400` | `bad_request` | Payload malformado ou sem identificador | Corrigir o body |
-| `401` | `unauthorized` | `X-API-Key` inválida ou ausente | Verificar credenciais |
-| `403` | `forbidden` | Escopo insuficiente ou sistema divergente | Verificar `X-System` e escopos |
-| `409` | `conflict` | Webhook duplicado na janela de replay | Ignorar — já foi processado |
-| `413` | `payload_too_large` | Body acima do limite | Reduzir payload |
-| `415` | `unsupported_media_type` | Content-Type não é `application/json` | Corrigir header |
-| `422` | `validation_error` | Campo inválido (data no passado, host não permitido, etc.) | Ver `error.details` |
-| `429` | `rate_limit_exceeded` | Muitas requisições | Aguardar e tentar com backoff |
-| `500` | `internal_error` | Erro interno | Acionar suporte Neectify |
-
----
-
-## Produtos Neectify
-
-| Produto | Frontend | API |
-|---|---|---|
-| Neectify Food | `food.neectify.com` | `api.food.neectify.com` |
-| Neectify Shop | `shop.neectify.com` | `api.shop.neectify.com` |
-| Billing Core | — | `api.billing.neectify.com` |
+1. Configure os dois conjuntos de hosts permitidos e os quatro eventos no Asaas.
+2. Publique API e worker do Billing Core juntos; depois publique o consumidor.
+3. Em Sandbox, crie checkout PIX e cartão, repita a chave de idempotência, consulte o job e abra a URL.
+4. Confirme que os retornos de navegador não concedem acesso e que apenas `CHECKOUT_PAID` o faz.
+5. Monitore jobs em dead letter, operações em reconciliação, deduplicação de webhooks e entregas internas.

@@ -20,6 +20,7 @@ O Billing Core resolve isso isolando billing em um serviço dedicado, com contra
 
 - API HTTP em FastAPI com rotas versionadas em `/v1`
 - criação assíncrona de assinatura com orquestração via Redis
+- criação assíncrona de checkout Asaas em `POST /v1/payments`, com PIX e cartão
 - recepção de webhook com validação de secret, replay protection e deduplicação
 - autenticação server-to-server via `X-System` e `X-API-Key`
 - autorização baseada em scopes para consumidores internos
@@ -144,6 +145,7 @@ Depois ajuste os valores necessários em `.env`, especialmente:
 - `INTERNAL_WEBHOOK_SIGNATURE`
 - `INTERNAL_API_CLIENTS`
 - `ALLOWED_INTERNAL_WEBHOOK_HOSTS`
+- `ALLOWED_CHECKOUT_REDIRECT_HOSTS`
 
 ### 2. Instalar dependências
 

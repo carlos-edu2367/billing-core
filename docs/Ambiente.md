@@ -17,6 +17,7 @@
 | `INTERNAL_API_CLIENTS` | clientes internos com API key e scopes |
 | `CORS_ALLOW_ORIGINS` | origens permitidas para CORS |
 | `ALLOWED_INTERNAL_WEBHOOK_HOSTS` | hosts aceitos para `webhook_link` |
+| `ALLOWED_CHECKOUT_REDIRECT_HOSTS` | hosts aceitos para `success_url`, `cancel_url` e `expired_url` |
 | `ENABLE_API_DOCS` | habilita ou desabilita `/docs`, `/redoc` e `/openapi.json` |
 | `MAX_REQUEST_BODY_BYTES` | limite maximo global de payload HTTP |
 | `MAX_WEBHOOK_BODY_BYTES` | limite maximo permitido para payloads de webhook |
@@ -74,7 +75,11 @@
 - `jobs:read`
 - `metrics:read`
 
-`payments:create` cobre tanto `POST /v1/payments` quanto `POST /v1/payment-links`. Para um produto que usa apenas checkout avulso via payment link, `customers:create` nao e necessario. Para assinaturas, mantenha `customers:create`.
+`payments:create` cobre `POST /v1/payments`, que cria checkout avulso. Esse fluxo não exige `customers:create`; assinaturas continuam exigindo esse escopo.
+
+## Checkout Asaas
+
+Em produção, configure `ALLOWED_CHECKOUT_REDIRECT_HOSTS` com os hosts HTTPS de retorno de cada produto. Configure o webhook Asaas para `CHECKOUT_CREATED`, `CHECKOUT_CANCELED`, `CHECKOUT_EXPIRED` e `CHECKOUT_PAID`. Callbacks de navegador não confirmam pagamento: somente `CHECKOUT_PAID` pode liberar benefícios.
 
 ## Bootstrap recomendado
 
