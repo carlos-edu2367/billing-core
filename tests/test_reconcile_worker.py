@@ -6,14 +6,12 @@ from types import SimpleNamespace
 
 from app.workers import tasks
 from app.domain.enums.subscription_status import SubscriptionStatus
-from app.domain.enums.subscription_type import SubscriptionType
 from app.domain.enums.system import System
 from app.domain.enums.gateway_provider import GatewayProvider
 from app.domain.enums.gateway_operation_status import GatewayOperationStatus
 from app.domain.enums.payment_status import PaymentStatus
 from app.domain.errors import NotFoundError
 from app.domain.entities.gateway_operation import GatewayOperation
-from app.domain.entities.payment import Payment
 from app.application.interfaces.gateway_provider import CreateCheckoutGatewayResponse
 
 
@@ -457,5 +455,22 @@ async def test_reconcile_worker_keeps_checkout_for_reconciliation_when_gateway_l
     await tasks.reconcile_gateway_operations_worker(ctx)
 
     assert operation.status == GatewayOperationStatus.REQUIRES_RECONCILIATION
+    assert payment_repo.saved == []
+    assert delivery_repo.saved == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_worker_leaves_checkout_without_gateway_reference_for_manual_reconciliation(monkeypatch, fake_redis):
+    operation = make_checkout_operation()
+    operation.gateway_reference = None
+    gateway = CheckoutGateway(checkout_response("ACTIVE"))
+    operation_repo, payment_repo, delivery_repo = configure_checkout_reconciliation(monkeypatch, operation, gateway)
+    ctx = {"redis": fake_redis, "logger": SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None, error=lambda *a, **k: None)}
+
+    await tasks.reconcile_gateway_operations_worker(ctx)
+
+    assert gateway.get_checkout_called == 0
+    assert operation.status == GatewayOperationStatus.REQUIRES_RECONCILIATION
+    assert operation_repo.saved == []
     assert payment_repo.saved == []
     assert delivery_repo.saved == []

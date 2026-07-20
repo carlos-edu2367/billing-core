@@ -1,6 +1,7 @@
 from decimal import Decimal
 from uuid import uuid4
 
+import httpx
 import pytest
 
 from app.application.dtos.request.checkout import CheckoutItemDTO, CreateCheckoutDTO
@@ -38,6 +39,13 @@ class FakeGetGateway:
 
     def get(self, gateway):
         return self.gateway
+
+
+class TimeoutAfterCheckoutRequestGateway(FakeCheckoutGateway):
+    async def create_checkout(self, **kwargs):
+        self.create_checkout_called += 1
+        self.last_kwargs = kwargs
+        raise httpx.ReadTimeout("checkout response lost after request dispatch")
 
 
 class FailingGetGateway:
@@ -298,3 +306,28 @@ async def test_create_checkout_marks_persisted_operation_failed_when_gateway_res
 
     assert operation_repo.saved[-1].status == GatewayOperationStatus.FAILED
     assert operation_repo.saved[-1].error_message == "gateway resolution failed"
+
+
+@pytest.mark.asyncio
+async def test_create_checkout_does_not_retry_when_gateway_timeout_has_uncertain_outcome():
+    gateway = TimeoutAfterCheckoutRequestGateway()
+    operation_repo = FakeGatewayOperationRepo()
+    service = CreateCheckout(
+        get_gateway=FakeGetGateway(gateway),
+        uow=FakeUow(),
+        payment_repo=FakePaymentRepo(),
+        gateway_operation_repo=operation_repo,
+    )
+
+    with pytest.raises(DomainError, match="(?i)resultado incerto"):
+        await service.execute(make_request(), GatewayProvider.ASAAS)
+
+    operation = operation_repo.saved[-1]
+    assert operation.status == GatewayOperationStatus.REQUIRES_RECONCILIATION
+    assert operation.gateway_reference is None
+    assert operation.request_payload["external_reference"] == "checkout:marketfy:order-123"
+
+    with pytest.raises(DomainError, match="pendente de reconciliacao"):
+        await service.execute(make_request(), GatewayProvider.ASAAS)
+
+    assert gateway.create_checkout_called == 1

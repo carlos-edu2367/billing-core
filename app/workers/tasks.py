@@ -792,6 +792,16 @@ async def reconcile_gateway_operations_worker(ctx):
                                 await op_repo.save(op)
                                 ctx["logger"].info(f"Reconciled cancel_subscription for {op.gateway_reference}")
                         elif op.operation_name == "create_checkout":
+                            if not op.gateway_reference:
+                                ctx["logger"].warning(
+                                    "Checkout sem identificador remoto requer reconciliacao manual",
+                                    extra={
+                                        "operation_id": str(op.id),
+                                        "external_reference": op.request_payload.get("external_reference"),
+                                    },
+                                )
+                                continue
+
                             checkout = await gateway.get_checkout(op.gateway_reference)
                             system = System(op.system) if isinstance(op.system, str) else op.system
                             expected_external_reference = f"checkout:{system.value}:{op.request_payload['system_payment_id']}"

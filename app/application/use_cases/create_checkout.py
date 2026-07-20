@@ -1,3 +1,7 @@
+import logging
+
+import httpx
+
 from app.application.dtos.request.checkout import CreateCheckoutDTO
 from app.application.dtos.response.checkout import CreateCheckoutResponse
 from app.application.interfaces.gateway_provider import GetGateway
@@ -11,6 +15,15 @@ from app.domain.enums.gateway_provider import GatewayProvider
 from app.domain.enums.payment_status import PaymentStatus
 from app.domain.enums.payment_type import PaymentType
 from app.domain.errors import DomainError
+
+logger = logging.getLogger(__name__)
+
+
+def _has_uncertain_gateway_outcome(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    return isinstance(exc, (httpx.RequestError, TimeoutError)) or (
+        isinstance(status_code, int) and status_code >= 500
+    )
 
 
 class CreateCheckout:
@@ -54,12 +67,14 @@ class CreateCheckout:
                 raise DomainError("Ja existe uma operacao de criacao de checkout em andamento para essa referencia.")
 
         if operation is None:
+            request_payload = request.model_dump(mode="json")
+            request_payload["external_reference"] = external_reference
             operation = GatewayOperation(
                 operation_name="create_checkout",
                 dedupe_key=operation_dedupe_key,
                 provider=gateway_provider,
                 system=request.system,
-                request_payload=request.model_dump(mode="json"),
+                request_payload=request_payload,
             )
             operation = await self.gateway_operation_repo.save(operation)
             await self.uow.commit()
@@ -121,6 +136,22 @@ class CreateCheckout:
                 await self.uow.commit()
                 raise DomainError(
                     "Checkout criado no gateway, mas a sincronizacao local falhou. Operacao marcada para reconciliacao."
+                ) from exc
+
+            if _has_uncertain_gateway_outcome(exc):
+                operation.mark_requires_reconciliation(gateway_reference=None, error_message=str(exc))
+                await self.gateway_operation_repo.save(operation)
+                await self.uow.commit()
+                logger.warning(
+                    "checkout_creation_outcome_uncertain",
+                    extra={
+                        "dedupe_key": operation.dedupe_key,
+                        "external_reference": external_reference,
+                        "error": str(exc),
+                    },
+                )
+                raise DomainError(
+                    "Resultado incerto ao criar checkout no gateway. Operacao marcada para reconciliacao manual."
                 ) from exc
 
             operation.mark_failed(str(exc))

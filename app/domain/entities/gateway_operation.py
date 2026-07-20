@@ -58,11 +58,8 @@ class GatewayOperation:
         self.error_message = (error_message or "").strip() or "Falha nao detalhada."
         self.updated_at = datetime.now(timezone.utc)
 
-    def mark_requires_reconciliation(self, gateway_reference: str, error_message: str) -> None:
-        normalized_reference = (gateway_reference or "").strip()
-        if not normalized_reference:
-            raise DomainError("GatewayOperation precisa de gateway_reference para reconciliacao.")
-
+    def mark_requires_reconciliation(self, gateway_reference: str | None, error_message: str) -> None:
+        normalized_reference = (gateway_reference or "").strip() or None
         self.status = GatewayOperationStatus.REQUIRES_RECONCILIATION
         self.gateway_reference = normalized_reference
         self.error_message = (error_message or "").strip() or "Operacao marcada para reconciliacao."
