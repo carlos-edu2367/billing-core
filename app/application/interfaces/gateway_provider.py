@@ -41,9 +41,11 @@ class CreatePaymentGatewayResponse:
 
 
 @dataclass
-class CreatePaymentLinkGatewayResponse:
-    payment_link_id: str
+class CreateCheckoutGatewayResponse:
+    checkout_id: str
     checkout_url: str
+    status: str
+    external_reference: str | None
 
 
 @dataclass
@@ -111,15 +113,16 @@ class InterfaceGateway(ABC):
         pass
 
     @abstractmethod
-    async def create_payment_link(
+    async def create_checkout(
         self,
-        name: str,
-        value: Decimal,
-        billing_type: PaymentType,
-        description: str,
+        *,
+        billing_types: list[str],
+        charge_types: list[str],
+        minutes_to_expire: int,
         external_reference: str,
-        due_date_limit_days: int = 3,
-    ) -> CreatePaymentLinkGatewayResponse:
+        callback: dict,
+        items: list[dict],
+    ) -> CreateCheckoutGatewayResponse:
         pass
 
     @abstractmethod

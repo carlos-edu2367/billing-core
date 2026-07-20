@@ -6,8 +6,8 @@ import httpx
 
 from app.application.dtos.request.webhook import WebhookPayload
 from app.application.interfaces.gateway_provider import (
+    CreateCheckoutGatewayResponse,
     CreatePaymentGatewayResponse,
-    CreatePaymentLinkGatewayResponse,
     GetCustomerResponse,
     InterfaceGateway,
     PaymentStatusGatewayResponse,
@@ -201,28 +201,39 @@ class AsaasProvider(InterfaceGateway):
             external_reference=response.get("externalReference"),
         )
 
-    async def create_payment_link(
+    async def create_checkout(
         self,
-        name: str,
-        value: Decimal,
-        billing_type: PaymentType,
-        description: str,
+        *,
+        billing_types: list[str],
+        charge_types: list[str],
+        minutes_to_expire: int,
         external_reference: str,
-        due_date_limit_days: int = 3,
-    ) -> CreatePaymentLinkGatewayResponse:
+        callback: dict,
+        items: list[dict],
+    ) -> CreateCheckoutGatewayResponse:
         payload = {
-            "name": name,
-            "value": float(value),
-            "billingType": billing_type.value,
-            "chargeType": "DETACHED",
-            "dueDateLimitDays": due_date_limit_days,
-            "description": description,
+            "billingTypes": billing_types,
+            "chargeTypes": charge_types,
+            "minutesToExpire": minutes_to_expire,
             "externalReference": external_reference,
+            "callback": callback,
+            "items": items,
         }
-        response = await self.asaas.post("/paymentLinks", payload)
-        return CreatePaymentLinkGatewayResponse(
-            payment_link_id=response["id"],
-            checkout_url=response["url"],
+        response = await self.asaas.post("/checkouts", payload)
+        checkout_id = response.get("id")
+        checkout_url = response.get("link")
+        status = response.get("status")
+        response_external_reference = response.get("externalReference")
+        if not checkout_id or not checkout_url or not status:
+            raise DomainError("Resposta de checkout do Asaas incompleta.")
+        if response_external_reference != external_reference:
+            raise DomainError("Checkout do Asaas retornou externalReference divergente.")
+
+        return CreateCheckoutGatewayResponse(
+            checkout_id=checkout_id,
+            checkout_url=checkout_url,
+            status=status,
+            external_reference=response_external_reference,
         )
 
     async def get_payment(self, payment_id: str) -> PaymentStatusGatewayResponse:
