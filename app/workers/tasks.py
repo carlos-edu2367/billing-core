@@ -813,6 +813,7 @@ async def reconcile_gateway_operations_worker(ctx):
                                 op.request_payload["system_payment_id"],
                                 system,
                             )
+                            should_save_payment = False
                             if payment is None:
                                 payment = Payment.create_standalone_payment(
                                     description=op.request_payload.get("description", ""),
@@ -827,11 +828,17 @@ async def reconcile_gateway_operations_worker(ctx):
                                     external_reference=expected_external_reference,
                                 )
                                 payment.payment_type = PaymentType.UNDEFINED
-                                payment.payment_status = local_status
-                                payment = await payment_repo.save(payment)
+                                should_save_payment = True
                             elif payment.payment_status != local_status:
-                                payment.payment_status = local_status
-                                payment.updated_at = datetime.now(timezone.utc)
+                                should_save_payment = True
+
+                            if should_save_payment:
+                                if checkout_status == "PAID":
+                                    payment.mark_as_paid(payment_date=datetime.now(timezone.utc))
+                                elif checkout_status == "CANCELED":
+                                    payment.mark_as_canceled()
+                                elif checkout_status == "EXPIRED":
+                                    payment.mark_as_expired()
                                 payment = await payment_repo.save(payment)
 
                             if checkout_status in {"PAID", "CANCELED", "EXPIRED"}:

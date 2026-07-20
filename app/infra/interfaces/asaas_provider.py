@@ -221,7 +221,10 @@ class AsaasProvider(InterfaceGateway):
 
     async def get_checkout(self, checkout_id: str) -> CreateCheckoutGatewayResponse:
         response = await self.asaas.get(f"/checkouts/{checkout_id}")
-        return self._checkout_response(response)
+        checkout = self._checkout_response(response)
+        if checkout.checkout_id != checkout_id:
+            raise DomainError("Checkout do Asaas retornou id divergente.")
+        return checkout
 
     @staticmethod
     def _checkout_response(response: dict) -> CreateCheckoutGatewayResponse:

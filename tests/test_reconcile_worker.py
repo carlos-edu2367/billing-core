@@ -410,6 +410,8 @@ async def test_reconcile_worker_recovers_paid_checkout_and_enqueues_deduplicated
     await tasks.reconcile_gateway_operations_worker(ctx)
 
     assert payment_repo.saved[0].payment_status == PaymentStatus.PAID
+    assert payment_repo.saved[0].paid_date is not None
+    assert payment_repo.saved[0].paid_date.tzinfo is not None
     assert operation.status == GatewayOperationStatus.COMPLETED
     assert len(delivery_repo.saved) == 1
     assert len(fake_redis.enqueued_jobs) == 1

@@ -183,3 +183,19 @@ async def test_asaas_provider_rejects_incomplete_get_checkout_response(response:
 
     with pytest.raises(DomainError, match="incompleta"):
         await provider.get_checkout("checkout_123")
+
+
+@pytest.mark.asyncio
+async def test_asaas_provider_rejects_get_checkout_response_for_another_checkout():
+    provider = AsaasProvider()
+    provider.asaas = FakeAsaasAPI(
+        {
+            "id": "checkout_other",
+            "link": "https://sandbox.asaas.com/checkoutSession/show/checkout_other",
+            "status": "ACTIVE",
+            "externalReference": "checkout:marketfy:order-123",
+        }
+    )
+
+    with pytest.raises(DomainError, match="id divergente"):
+        await provider.get_checkout("checkout_123")
