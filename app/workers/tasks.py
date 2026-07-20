@@ -1,18 +1,15 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from app.application.dtos.request.payment import CreatePaymentDTO
-from app.application.dtos.request.payment_link import CreatePaymentLinkDTO
+from app.application.dtos.request.checkout import CreateCheckoutDTO
 from app.application.dtos.request.subscription import CreateSubscriptionDTO
 from app.application.dtos.request.subscription_cancel import CancelSubscriptionDTO
 from app.application.dtos.request.webhook import WebhookPayload
 from app.application.dtos.response.webhook import InternalEventType, SendInternalWebhookPayment, SendInternalWebhookSubscription
 from app.application.use_cases.cancel_subscription import CancelSubscription
-from app.application.use_cases.create_payment import CreatePayment
-from app.application.use_cases.create_payment_link import CreatePaymentLink
+from app.application.use_cases.create_checkout import CreateCheckout
 from app.infra.interfaces.asaas_provider import AsaasAPIError
 from app.application.use_cases.create_subscription import CreateSubscription
-from app.application.use_cases.reconcile_payment import ReconcilePayment
 from app.domain.entities.internal_webhook_delivery import InternalWebhookDelivery
 from app.domain.entities.payment import Payment
 from app.domain.entities.subscription import Subscription, SubscriptionStatus
@@ -31,7 +28,6 @@ from app.infra.jobs import register_dead_letter, update_job_metadata
 from app.infra.interfaces.gateway_provider import GetGatewayInfra
 from app.infra.interfaces.internal_webhook import InternalWebhookProvider
 from app.infra.interfaces.uow_provider import UowProvider
-from app.infra.repo.customer_repo import CustomerRepositoryINFRA
 from app.infra.repo.gateway_operation_repo import GatewayOperationRepositoryINFRA
 from app.infra.repo.internal_webhook_delivery_repo import InternalWebhookDeliveryRepositoryINFRA
 from app.infra.repo.payment_repo import PaymentRepositoryINFRA
@@ -348,7 +344,7 @@ async def create_subscription_worker(ctx, dto_dict: dict, customer_provider_id: 
         raise
 
 
-async def create_payment_worker(ctx, dto_dict: dict, customer_provider_id: str, system_str: str):
+async def create_checkout_worker(ctx, dto_dict: dict):
     job_id = ctx["job_id"]
     job_try = ctx["job_try"]
 
@@ -362,47 +358,21 @@ async def create_payment_worker(ctx, dto_dict: dict, customer_provider_id: str, 
             error_code=None,
             error_message=None,
         )
-        dto = CreatePaymentDTO.model_validate(dto_dict | {"customer_provider_id": customer_provider_id})
-        internal_delivery_id: UUID | None = None
+        dto = CreateCheckoutDTO.model_validate(dto_dict)
 
         async with AsyncSessionLocal() as session:
-            customer_repo = CustomerRepositoryINFRA(session)
             payment_repo = PaymentRepositoryINFRA(session)
             gateway_operation_repo = GatewayOperationRepositoryINFRA(session)
-            delivery_repo = InternalWebhookDeliveryRepositoryINFRA(session)
             uow = UowProvider(session)
             get_gateway = GetGatewayInfra()
 
-            customer = await customer_repo.get_by_provider_id(customer_provider_id)
-            service = CreatePayment(
+            service = CreateCheckout(
                 get_gateway=get_gateway,
                 uow=uow,
                 payment_repo=payment_repo,
                 gateway_operation_repo=gateway_operation_repo,
             )
-            result = await service.execute(dto, customer)
-
-            await ctx["redis"].enqueue_job(
-                "workers:tasks.reconcile_pending_payment_worker",
-                str(result.payment_id),
-                _defer_by=900,
-            )
-
-            if result.payment_status != PaymentStatus.PENDING:
-                payment = await payment_repo.get_by_id(result.payment_id)
-                delivery = await _build_payment_internal_delivery(payment)
-                if delivery is not None:
-                    existing_delivery = await delivery_repo.get_by_dedupe_key(delivery.dedupe_key)
-                    if existing_delivery is None:
-                        delivery = await delivery_repo.save(delivery)
-                        await uow.commit()
-                        internal_delivery_id = delivery.id
-
-        if internal_delivery_id is not None:
-            await ctx["redis"].enqueue_job(
-                "workers:tasks.send_internal_webhook",
-                str(internal_delivery_id),
-            )
+            result = await service.execute(dto, GatewayProvider.ASAAS)
 
         await update_job_metadata(
             ctx["redis"],
@@ -410,9 +380,9 @@ async def create_payment_worker(ctx, dto_dict: dict, customer_provider_id: str, 
             status="completed",
             finished_at=datetime.now(timezone.utc),
         )
-        ctx["logger"].info("Payment created", extra={"job_id": job_id, "job_try": job_try, "system": system_str})
+        ctx["logger"].info("Checkout created", extra={"job_id": job_id, "job_try": job_try, "system": dto.system.value})
         return {"status": "success", "result": _dump_result(result)}
-    except (DomainError, NotFoundError) as exc:
+    except (DomainError, NotFoundError, ValueError) as exc:
         await update_job_metadata(
             ctx["redis"],
             job_id,
@@ -422,13 +392,10 @@ async def create_payment_worker(ctx, dto_dict: dict, customer_provider_id: str, 
             error_code=exc.__class__.__name__,
             error_message=str(exc),
         )
-        await register_dead_letter(ctx["redis"], "create_payment_worker", job_id)
-        ctx["logger"].warning("Payment rejected", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
+        await register_dead_letter(ctx["redis"], "create_checkout_worker", job_id)
+        ctx["logger"].warning("Checkout rejected", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
         return {"status": "failed", "error": str(exc)}
     except AsaasAPIError as exc:
-        # Erros 4xx do Asaas são falhas de negócio (payload inválido, cliente
-        # inexistente, etc.) — não há ponto em retentar sem intervenção manual.
-        # O body completo já foi logado em asaas_provider._handle_error.
         is_client_error = 400 <= exc.status_code < 500
         if is_client_error:
             await update_job_metadata(
@@ -440,9 +407,9 @@ async def create_payment_worker(ctx, dto_dict: dict, customer_provider_id: str, 
                 error_code=f"AsaasAPIError_{exc.status_code}",
                 error_message=exc.body[:500],
             )
-            await register_dead_letter(ctx["redis"], "create_payment_worker", job_id)
+            await register_dead_letter(ctx["redis"], "create_checkout_worker", job_id)
             ctx["logger"].error(
-                "Payment creation failed terminally — Asaas returned client error",
+                "Checkout creation failed terminally - Asaas returned client error",
                 extra={
                     "job_id": job_id,
                     "job_try": job_try,
@@ -464,9 +431,9 @@ async def create_payment_worker(ctx, dto_dict: dict, customer_provider_id: str, 
                 error_message=exc.body[:500],
             )
             if is_final_try:
-                await register_dead_letter(ctx["redis"], "create_payment_worker", job_id)
+                await register_dead_letter(ctx["redis"], "create_checkout_worker", job_id)
             ctx["logger"].warning(
-                "Payment creation transient failure — Asaas returned server error, retry scheduled",
+                "Checkout creation transient failure - Asaas returned server error, retry scheduled",
                 extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
             )
             raise
@@ -482,203 +449,8 @@ async def create_payment_worker(ctx, dto_dict: dict, customer_provider_id: str, 
             error_message=str(exc),
         )
         if is_final_try:
-            await register_dead_letter(ctx["redis"], "create_payment_worker", job_id)
-        ctx["logger"].error("Payment creation failed", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
-        raise
-
-
-async def create_payment_link_worker(ctx, dto_dict: dict, gateway_provider_str: str):
-    job_id = ctx["job_id"]
-    job_try = ctx["job_try"]
-
-    try:
-        await update_job_metadata(
-            ctx["redis"],
-            job_id,
-            status="processing",
-            attempt=job_try,
-            started_at=datetime.now(timezone.utc),
-            error_code=None,
-            error_message=None,
-        )
-        dto = CreatePaymentLinkDTO.model_validate(dto_dict)
-        gateway_provider = GatewayProvider[gateway_provider_str.upper()]
-
-        async with AsyncSessionLocal() as session:
-            payment_repo = PaymentRepositoryINFRA(session)
-            gateway_operation_repo = GatewayOperationRepositoryINFRA(session)
-            uow = UowProvider(session)
-            get_gateway = GetGatewayInfra()
-
-            service = CreatePaymentLink(
-                get_gateway=get_gateway,
-                uow=uow,
-                payment_repo=payment_repo,
-                gateway_operation_repo=gateway_operation_repo,
-            )
-            result = await service.execute(dto, gateway_provider)
-
-        await update_job_metadata(
-            ctx["redis"],
-            job_id,
-            status="completed",
-            finished_at=datetime.now(timezone.utc),
-        )
-        ctx["logger"].info("Payment link created", extra={"job_id": job_id, "job_try": job_try, "system": dto.system.value})
-        return {"status": "success", "result": _dump_result(result)}
-    except (DomainError, NotFoundError, ValueError) as exc:
-        await update_job_metadata(
-            ctx["redis"],
-            job_id,
-            status="failed",
-            attempt=job_try,
-            finished_at=datetime.now(timezone.utc),
-            error_code=exc.__class__.__name__,
-            error_message=str(exc),
-        )
-        await register_dead_letter(ctx["redis"], "create_payment_link_worker", job_id)
-        ctx["logger"].warning("Payment link rejected", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
-        return {"status": "failed", "error": str(exc)}
-    except AsaasAPIError as exc:
-        is_client_error = 400 <= exc.status_code < 500
-        if is_client_error:
-            await update_job_metadata(
-                ctx["redis"],
-                job_id,
-                status="failed",
-                attempt=job_try,
-                finished_at=datetime.now(timezone.utc),
-                error_code=f"AsaasAPIError_{exc.status_code}",
-                error_message=exc.body[:500],
-            )
-            await register_dead_letter(ctx["redis"], "create_payment_link_worker", job_id)
-            ctx["logger"].error(
-                "Payment link creation failed terminally - Asaas returned client error",
-                extra={
-                    "job_id": job_id,
-                    "job_try": job_try,
-                    "asaas_status": exc.status_code,
-                    "asaas_body": exc.body,
-                    "terminal": is_client_error,
-                },
-            )
-            return {"status": "failed", "error": str(exc)}
-        else:
-            is_final_try = job_try >= settings.WORKER_MAX_TRIES
-            await update_job_metadata(
-                ctx["redis"],
-                job_id,
-                status="failed" if is_final_try else "retrying",
-                attempt=job_try,
-                finished_at=datetime.now(timezone.utc) if is_final_try else None,
-                error_code=f"AsaasAPIError_{exc.status_code}",
-                error_message=exc.body[:500],
-            )
-            if is_final_try:
-                await register_dead_letter(ctx["redis"], "create_payment_link_worker", job_id)
-            ctx["logger"].warning(
-                "Payment link creation transient failure - Asaas returned server error, retry scheduled",
-                extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
-            )
-            raise
-    except Exception as exc:
-        is_final_try = job_try >= settings.WORKER_MAX_TRIES
-        await update_job_metadata(
-            ctx["redis"],
-            job_id,
-            status="failed" if is_final_try else "retrying",
-            attempt=job_try,
-            finished_at=datetime.now(timezone.utc) if is_final_try else None,
-            error_code=exc.__class__.__name__,
-            error_message=str(exc),
-        )
-        if is_final_try:
-            await register_dead_letter(ctx["redis"], "create_payment_link_worker", job_id)
-        ctx["logger"].error("Payment link creation failed", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
-        raise
-
-
-async def reconcile_pending_payment_worker(ctx, payment_id: str):
-    job_id = ctx["job_id"]
-    job_try = ctx["job_try"]
-
-    try:
-        await update_job_metadata(
-            ctx["redis"],
-            job_id,
-            status="processing",
-            attempt=job_try,
-            started_at=datetime.now(timezone.utc),
-            error_code=None,
-            error_message=None,
-            resource_type="payment",
-            resource_id=payment_id,
-        )
-        internal_delivery_id: UUID | None = None
-
-        async with AsyncSessionLocal() as session:
-            payment_repo = PaymentRepositoryINFRA(session)
-            delivery_repo = InternalWebhookDeliveryRepositoryINFRA(session)
-            uow = UowProvider(session)
-            get_gateway = GetGatewayInfra()
-
-            service = ReconcilePayment(
-                get_gateway=get_gateway,
-                uow=uow,
-                payment_repo=payment_repo,
-            )
-            result = await service.execute(UUID(payment_id))
-
-            if result is not None:
-                delivery = await _build_payment_internal_delivery(result)
-                if delivery is not None:
-                    existing_delivery = await delivery_repo.get_by_dedupe_key(delivery.dedupe_key)
-                    if existing_delivery is None:
-                        delivery = await delivery_repo.save(delivery)
-                        await uow.commit()
-                        internal_delivery_id = delivery.id
-
-        if internal_delivery_id is not None:
-            await ctx["redis"].enqueue_job(
-                "workers:tasks.send_internal_webhook",
-                str(internal_delivery_id),
-            )
-
-        await update_job_metadata(
-            ctx["redis"],
-            job_id,
-            status="completed",
-            finished_at=datetime.now(timezone.utc),
-        )
-        ctx["logger"].info("Payment reconciled", extra={"job_id": job_id, "job_try": job_try, "payment_id": payment_id})
-        return {"status": "success", "payment_id": payment_id}
-    except (DomainError, NotFoundError, ValueError) as exc:
-        await update_job_metadata(
-            ctx["redis"],
-            job_id,
-            status="failed",
-            attempt=job_try,
-            finished_at=datetime.now(timezone.utc),
-            error_code=exc.__class__.__name__,
-            error_message=str(exc),
-        )
-        await register_dead_letter(ctx["redis"], "reconcile_pending_payment_worker", job_id)
-        ctx["logger"].warning("Payment reconciliation rejected", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
-        return {"status": "failed", "error": str(exc)}
-    except Exception as exc:
-        is_final_try = job_try >= settings.WORKER_MAX_TRIES
-        await update_job_metadata(
-            ctx["redis"],
-            job_id,
-            status="failed" if is_final_try else "retrying",
-            attempt=job_try,
-            finished_at=datetime.now(timezone.utc) if is_final_try else None,
-            error_code=exc.__class__.__name__,
-            error_message=str(exc),
-        )
-        if is_final_try:
-            await register_dead_letter(ctx["redis"], "reconcile_pending_payment_worker", job_id)
-        ctx["logger"].error("Payment reconciliation failed", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
+            await register_dead_letter(ctx["redis"], "create_checkout_worker", job_id)
+        ctx["logger"].error("Checkout creation failed", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
         raise
 
 

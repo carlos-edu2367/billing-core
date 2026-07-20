@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
     "",
     status_code=status.HTTP_202_ACCEPTED,
     response_model=AcceptedJobResponse,
-    summary="Criar pagamento avulso",
+    summary="Criar checkout de pagamento avulso",
     responses=build_error_responses(400, 401, 403, 409, 422, 429, 500),
 )
 async def create_payment(
@@ -50,7 +50,7 @@ async def create_payment(
         )
 
     request_hash = build_request_hash(payload.model_dump(mode="json"))
-    namespace = "payment_create"
+    namespace = "checkout_create"
     existing_job = await start_idempotent_job(redis, auth.system, idempotency_key, request_hash, namespace=namespace)
     if existing_job:
         logger.info(
@@ -63,12 +63,7 @@ async def create_payment(
         }
 
     try:
-        job = await redis.enqueue_job(
-            "workers:tasks.create_payment_worker",
-            payload.to_worker_payload(),
-            payload.customer_provider_id,
-            payload.system.name,
-        )
+        job = await redis.enqueue_job("workers:tasks.create_checkout_worker", payload.to_worker_payload())
     except Exception:
         await clear_idempotent_job(redis, auth.system, idempotency_key, namespace=namespace)
         raise
@@ -83,7 +78,7 @@ async def create_payment(
         redis,
         job.job_id,
         status="queued",
-        job_name="create_payment_worker",
+        job_name="create_checkout_worker",
         attempt=0,
         max_tries=settings.WORKER_MAX_TRIES,
         request_id=http_request.state.request_id,
@@ -92,11 +87,11 @@ async def create_payment(
         resource_type="payment",
     )
     logger.info(
-        "Payment creation job enqueued",
+        "Checkout creation job enqueued",
         extra={"request_id": http_request.state.request_id, "system": auth.system.value, "job_id": job.job_id},
     )
 
-    return {"job_id": job.job_id, "message": "Pagamento enviado para processamento."}
+    return {"job_id": job.job_id, "message": "Checkout enviado para processamento."}
 
 
 @router.get(

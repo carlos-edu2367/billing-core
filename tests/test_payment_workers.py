@@ -9,7 +9,6 @@ from app.domain.entities.internal_webhook_delivery import InternalWebhookDeliver
 from app.domain.entities.payment import Payment
 from app.domain.enums.gateway_provider import GatewayProvider
 from app.domain.enums.payment_status import PaymentStatus
-from app.domain.enums.payment_type import PaymentType
 from app.domain.enums.system import System
 from app.workers import tasks
 
@@ -22,27 +21,7 @@ class DummySession:
         return False
 
 
-class FakeCreatePaymentService:
-    async def execute(self, dto, customer):
-        return SimpleNamespace(
-            payment_id=uuid4(),
-            value=Decimal("79.90"),
-            checkout_url="https://www.asaas.com/i/pay_123",
-            payment_status=PaymentStatus.PENDING,
-            billing_type=PaymentType.UNDEFINED,
-            due_date=date(2026, 6, 10),
-            model_dump=lambda mode="json": {
-                "payment_id": str(uuid4()),
-                "value": "79.90",
-                "checkout_url": "https://www.asaas.com/i/pay_123",
-                "payment_status": "pending",
-                "billing_type": "UNDEFINED",
-                "due_date": "2026-06-10",
-            },
-        )
-
-
-class FakeCreatePaymentLinkService:
+class FakeCreateCheckoutService:
     async def execute(self, dto, gateway_provider):
         return SimpleNamespace(
             payment_id=uuid4(),
@@ -50,18 +29,10 @@ class FakeCreatePaymentLinkService:
             payment_status=PaymentStatus.PENDING,
             model_dump=lambda mode="json": {
                 "payment_id": str(uuid4()),
-                "checkout_url": "https://www.asaas.com/c/pml_123",
+                "checkout_url": "https://www.asaas.com/checkout/checkout_123",
                 "payment_status": "pending",
             },
         )
-
-
-class FakeCustomerRepo:
-    def __init__(self, session):
-        self.session = session
-
-    async def get_by_provider_id(self, provider_id):
-        return object()
 
 
 class FakeWebhookPaymentRepo:
@@ -116,75 +87,39 @@ class FakeProcessWebhookService:
 
 
 @pytest.mark.asyncio
-async def test_create_payment_worker_schedules_single_reconciliation(monkeypatch, fake_redis):
-    monkeypatch.setattr(tasks, "AsyncSessionLocal", lambda: DummySession())
-    monkeypatch.setattr(tasks, "CustomerRepositoryINFRA", FakeCustomerRepo)
-    monkeypatch.setattr(tasks, "PaymentRepositoryINFRA", lambda session: object())
-    monkeypatch.setattr(tasks, "GatewayOperationRepositoryINFRA", lambda session: object())
-    monkeypatch.setattr(tasks, "UowProvider", lambda session: object())
-    monkeypatch.setattr(tasks, "GetGatewayInfra", lambda: object())
-    monkeypatch.setattr(tasks, "CreatePayment", lambda **kwargs: FakeCreatePaymentService())
-
-    ctx = {
-        "job_id": "job-1",
-        "job_try": 1,
-        "redis": fake_redis,
-        "logger": SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None, error=lambda *a, **k: None),
-    }
-
-    response = await tasks.create_payment_worker(
-        ctx,
-        {
-            "value": "79.90",
-            "billing_type": "UNDEFINED",
-            "due_date": "2026-06-10",
-            "description": "Pedido 123",
-            "system": "neectify_shop",
-            "system_payment_id": "order-123",
-            "webhook_link": "https://hooks.neectify.local/billing/payment",
-        },
-        "cus_123",
-        "NEECTIFY_SHOP",
-    )
-
-    assert response["status"] == "success"
-    reconcile_jobs = [item for item in fake_redis.enqueued_jobs if item[0][0] == "workers:tasks.reconcile_pending_payment_worker"]
-    assert len(reconcile_jobs) == 1
-    assert reconcile_jobs[0][1]["_defer_by"] == 900
-
-
-@pytest.mark.asyncio
-async def test_create_payment_link_worker_returns_checkout_url_without_reconciliation(monkeypatch, fake_redis):
+async def test_create_checkout_worker_returns_checkout_url_without_reconciliation(monkeypatch, fake_redis):
     monkeypatch.setattr(tasks, "AsyncSessionLocal", lambda: DummySession())
     monkeypatch.setattr(tasks, "PaymentRepositoryINFRA", lambda session: object())
     monkeypatch.setattr(tasks, "GatewayOperationRepositoryINFRA", lambda session: object())
     monkeypatch.setattr(tasks, "UowProvider", lambda session: object())
     monkeypatch.setattr(tasks, "GetGatewayInfra", lambda: object())
-    monkeypatch.setattr(tasks, "CreatePaymentLink", lambda **kwargs: FakeCreatePaymentLinkService())
+    monkeypatch.setattr(tasks, "CreateCheckout", lambda **kwargs: FakeCreateCheckoutService())
 
     ctx = {
-        "job_id": "job-link-1",
+        "job_id": "job-checkout-1",
         "job_try": 1,
         "redis": fake_redis,
         "logger": SimpleNamespace(info=lambda *a, **k: None, warning=lambda *a, **k: None, error=lambda *a, **k: None),
     }
 
-    response = await tasks.create_payment_link_worker(
+    response = await tasks.create_checkout_worker(
         ctx,
         {
-            "value": "72.00",
-            "billing_type": "UNDEFINED",
             "description": "Creditos NF-e - pack_100",
-            "due_date_limit_days": 3,
+            "value": "72.00",
+            "minutes_to_expire": 30,
             "system": "neectify_shop",
             "system_payment_id": "pack-100",
             "webhook_link": "https://hooks.neectify.local/billing/payment",
+            "success_url": "https://app.neectify.local/billing/success",
+            "cancel_url": "https://app.neectify.local/billing/cancel",
+            "expired_url": "https://app.neectify.local/billing/expired",
+            "items": [{"external_reference": "pack-100", "name": "100 creditos", "quantity": 1, "value": "72.00"}],
         },
-        "ASAAS",
     )
 
     assert response["status"] == "success"
-    assert response["result"]["checkout_url"] == "https://www.asaas.com/c/pml_123"
+    assert response["result"]["checkout_url"].startswith("https://")
     reconcile_jobs = [item for item in fake_redis.enqueued_jobs if item[0][0] == "workers:tasks.reconcile_pending_payment_worker"]
     assert reconcile_jobs == []
 

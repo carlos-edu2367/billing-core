@@ -67,18 +67,6 @@ def checkout_payload(**overrides):
     return payload
 
 
-def payment_link_payload():
-    return {
-        "value": "72.00",
-        "billing_type": "UNDEFINED",
-        "description": "Creditos NF-e - pack_100",
-        "due_date_limit_days": 3,
-        "system": "neectify_shop",
-        "system_payment_id": "pack-100",
-        "webhook_link": "https://hooks.neectify.local/billing/payment",
-    }
-
-
 def auth_headers():
     return {
         "X-System": System.NEECTIFY_SHOP.value,
@@ -189,6 +177,20 @@ def test_create_payment_requires_idempotency_key(client):
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_create_checkout_enqueues_checkout_worker_without_legacy_customer(client, fake_redis):
+    response = client.post(
+        "/v1/payments",
+        json=checkout_payload(),
+        headers=auth_headers() | {"Idempotency-Key": "checkout-idem-1"},
+    )
+
+    assert response.status_code == 202
+    assert fake_redis.enqueued_jobs[0][0][0] == "workers:tasks.create_checkout_worker"
+    assert "customer_provider_id" not in fake_redis.enqueued_jobs[0][0][1]
+    assert len(fake_redis.enqueued_jobs[0][0]) == 2
+    assert fake_redis.hashes[f"billing_core:job_meta:{response.json()['job_id']}"]["job_name"] == "create_checkout_worker"
 
 
 def test_payment_checkout_rejects_mismatched_total():
@@ -315,50 +317,22 @@ def test_payment_checkout_requires_redirect_hosts_in_production(monkeypatch):
         settings.validate_runtime()
 
 
-def test_create_payment_link_requires_idempotency_key(client):
+def test_payment_links_route_is_removed(client):
     response = client.post(
         "/v1/payment-links",
-        json=payment_link_payload(),
+        json={},
         headers=auth_headers(),
     )
 
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "validation_error"
+    assert response.status_code == 404
 
 
-def test_create_payment_link_is_idempotent_per_key_and_payload(client, fake_redis):
-    headers = auth_headers() | {"Idempotency-Key": "payment-link-idem-1"}
-
-    first = client.post("/v1/payment-links", json=payment_link_payload(), headers=headers)
-    second = client.post("/v1/payment-links", json=payment_link_payload(), headers=headers)
-
-    assert first.status_code == 202
-    assert second.status_code == 202
-    assert first.json()["job_id"] == second.json()["job_id"]
-    assert "Checkout ja recebido anteriormente" in second.json()["message"]
-    assert fake_redis.enqueued_jobs[0][0][0] == "workers:tasks.create_payment_link_worker"
-    assert fake_redis.enqueued_jobs[0][0][1]["system_payment_id"] == "pack-100"
-    assert len(fake_redis.enqueued_jobs[0][0]) == 3
-
-
-def test_create_payment_link_rejects_debit_card(client):
-    headers = auth_headers() | {"Idempotency-Key": "payment-link-debit"}
-    response = client.post(
-        "/v1/payment-links",
-        json=payment_link_payload() | {"billing_type": "DEBIT_CARD"},
-        headers=headers,
-    )
-
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "validation_error"
-
-
-def test_get_job_status_returns_completed_worker_result(client, fake_redis):
-    job_id = "job-payment-link-result"
+def test_get_job_status_returns_completed_checkout_worker_result(client, fake_redis):
+    job_id = "job-checkout-result"
     fake_redis.values[f"billing_core:job_owner:{job_id}"] = System.NEECTIFY_SHOP.value
     fake_redis.hashes[f"billing_core:job_meta:{job_id}"] = {
         "status": "completed",
-        "job_name": "create_payment_link_worker",
+        "job_name": "create_checkout_worker",
         "attempt": "1",
         "max_tries": "3",
         "request_id": "req-1",
@@ -369,7 +343,7 @@ def test_get_job_status_returns_completed_worker_result(client, fake_redis):
         "error_message": "",
     }
     fake_redis.values[f"arq:result:{job_id}"] = serialize_result(
-        function="workers:tasks.create_payment_link_worker",
+        function="workers:tasks.create_checkout_worker",
         args=(),
         kwargs={},
         job_try=1,

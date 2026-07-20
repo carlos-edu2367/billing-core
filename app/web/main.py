@@ -15,7 +15,6 @@ from app.web.errors import register_exception_handlers, register_request_too_lar
 from app.web.routes.customers import router as customers_router
 from app.web.routes.health import router as health_router
 from app.web.routes.jobs import router as jobs_router
-from app.web.routes.payment_links import router as payment_links_router
 from app.web.routes.payments import router as payments_router
 from app.web.routes.subscriptions import router as subscriptions_router
 from app.web.routes.webhooks import router as webhooks_router
@@ -69,7 +68,6 @@ Operações críticas de escrita, como criação de assinatura, exigem `Idempote
         {"name": "customers", "description": "Cadastro de clientes no provedor de pagamento."},
         {"name": "subscriptions", "description": "Fluxos de criação assíncrona de assinaturas com idempotência e autenticação interna."},
         {"name": "payments", "description": "Fluxos de criacao e consulta local de pagamentos avulsos."},
-        {"name": "payment-links", "description": "Fluxos de criacao assincrona de links de checkout Asaas."},
         {"name": "jobs", "description": "Consulta de jobs assíncronos gerados pelos fluxos de billing."},
         {"name": "webhooks", "description": "Recepção técnica de eventos de gateways externos, com validação e replay protection."},
     ],
@@ -152,7 +150,6 @@ app.include_router(customers_router)
 app.include_router(webhooks_router)
 app.include_router(subscriptions_router)
 app.include_router(payments_router)
-app.include_router(payment_links_router)
 app.include_router(jobs_router)
 
 if __name__ == "__main__":

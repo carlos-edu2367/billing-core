@@ -30,28 +30,11 @@ class SubscriptionStatusResponse:
 
 
 @dataclass
-class CreatePaymentGatewayResponse:
-    payment_id: str
-    status: str
-    value: Decimal
-    due_date: date
-    invoice_url: str | None
-    billing_type: str
-    external_reference: str | None
-
-
-@dataclass
 class CreateCheckoutGatewayResponse:
     checkout_id: str
     checkout_url: str
     status: str
     external_reference: str | None
-
-
-@dataclass
-class CreatePaymentLinkGatewayResponse:
-    payment_link_id: str
-    checkout_url: str
 
 
 @dataclass
@@ -107,18 +90,6 @@ class InterfaceGateway(ABC):
         pass
 
     @abstractmethod
-    async def create_payment(
-        self,
-        customer_provider_id: str,
-        billing_type: PaymentType,
-        value: Decimal,
-        due_date: date,
-        description: str,
-        external_reference: str,
-    ) -> CreatePaymentGatewayResponse:
-        pass
-
-    @abstractmethod
     async def create_checkout(
         self,
         *,
@@ -133,18 +104,6 @@ class InterfaceGateway(ABC):
 
     @abstractmethod
     async def get_checkout(self, checkout_id: str) -> CreateCheckoutGatewayResponse:
-        pass
-
-    @abstractmethod
-    async def create_payment_link(
-        self,
-        name: str,
-        value: Decimal,
-        billing_type: PaymentType,
-        description: str,
-        external_reference: str,
-        due_date_limit_days: int = 3,
-    ) -> CreatePaymentLinkGatewayResponse:
         pass
 
     @abstractmethod
