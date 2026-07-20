@@ -292,6 +292,7 @@ class ProcessWebhookService():
             return None
 
         terminal_statuses = {
+            PaymentStatus.CONFIRMED,
             PaymentStatus.PAID,
             PaymentStatus.CANCELED,
             PaymentStatus.EXPIRED,

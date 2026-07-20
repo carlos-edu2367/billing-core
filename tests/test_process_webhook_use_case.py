@@ -254,6 +254,25 @@ async def test_process_webhook_ignores_conflicting_checkout_terminal_event():
 
 
 @pytest.mark.asyncio
+async def test_process_webhook_ignores_checkout_expiration_after_confirmation():
+    payment = make_checkout_payment()
+    payment.payment_status = PaymentStatus.CONFIRMED
+    payment_repo = FakePaymentRepo(existing=payment)
+    webhook_repo = FakeWebhookEventRepo()
+    service = ProcessWebhookService(payment_repo, FakeSubscriptionRepo(None), FakeUow(), webhook_repo)
+
+    response = await service.execute(
+        GatewayProvider.ASAAS,
+        make_checkout_payload(EventType.CHECKOUT_EXPIRED, source_event_id="evt-checkout-confirmed"),
+    )
+
+    assert response is None
+    assert payment.payment_status == PaymentStatus.CONFIRMED
+    assert payment_repo.saved == []
+    assert webhook_repo.existing_event.processed is True
+
+
+@pytest.mark.asyncio
 async def test_process_webhook_creates_payment_and_marks_subscription_as_paid():
     subscription = make_subscription()
     payment_repo = FakePaymentRepo()
