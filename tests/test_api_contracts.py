@@ -206,6 +206,15 @@ def test_payment_checkout_rejects_invalid_expiration(minutes):
     assert any(item["loc"] == ("minutes_to_expire",) for item in error.value.errors())
 
 
+@pytest.mark.parametrize("minutes", [10, 1440])
+def test_payment_checkout_accepts_expiration_boundaries(monkeypatch, minutes):
+    monkeypatch.setattr(settings, "ALLOWED_CHECKOUT_REDIRECT_HOSTS", ["app.neectify.local"], raising=False)
+
+    checkout = CreatePaymentRequest.model_validate(checkout_payload(minutes_to_expire=minutes))
+
+    assert checkout.minutes_to_expire == minutes
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -298,6 +307,16 @@ def test_payment_checkout_rejects_external_reference_above_200_characters(monkey
 
     with pytest.raises(ValidationError, match="200 caracteres"):
         CreatePaymentRequest.model_validate(checkout_payload(system_payment_id=system_payment_id))
+
+
+def test_payment_checkout_accepts_external_reference_with_exactly_200_characters(monkeypatch):
+    monkeypatch.setattr(settings, "ALLOWED_CHECKOUT_REDIRECT_HOSTS", ["app.neectify.local"], raising=False)
+    external_reference_prefix = "checkout:neectify_shop:"
+    system_payment_id = "x" * (200 - len(external_reference_prefix))
+
+    checkout = CreatePaymentRequest.model_validate(checkout_payload(system_payment_id=system_payment_id))
+
+    assert len(f"{external_reference_prefix}{checkout.system_payment_id}") == 200
 
 
 def test_payment_checkout_requires_redirect_hosts_configuration(monkeypatch):
