@@ -76,12 +76,12 @@ class CreatePaymentRequest(CreateCheckoutDTO):
         if parsed.scheme != "https" or not parsed.hostname:
             raise ValueError("Redirect do checkout deve usar HTTPS.")
 
-        allowed_hosts = settings.ALLOWED_CHECKOUT_REDIRECT_HOSTS
+        allowed_hosts = settings.effective_checkout_redirect_hosts
         if not allowed_hosts:
             raise ValueError("Nenhum host de redirect permitido foi configurado.")
 
         hostname = parsed.hostname.lower()
-        if not any(hostname == allowed.lower() or hostname.endswith(f".{allowed.lower()}") for allowed in allowed_hosts):
+        if not any(hostname == allowed or hostname.endswith(f".{allowed}") for allowed in allowed_hosts):
             raise ValueError("Host do redirect do checkout nao permitido.")
 
         return value

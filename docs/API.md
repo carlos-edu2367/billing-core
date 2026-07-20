@@ -223,7 +223,7 @@ Cria um checkout Asaas assíncrono e idempotente. Não cria uma cobrança direta
 }
 ```
 
-`minutes_to_expire` aceita de 10 a 1440. A soma de `items` deve ser igual a `value`, e cada item possui sua própria `external_reference`. A referência externa do checkout é calculada como `checkout:{system}:{system_payment_id}`. As três URLs de retorno devem usar host presente em `ALLOWED_CHECKOUT_REDIRECT_HOSTS`.
+`minutes_to_expire` aceita de 10 a 1440. A soma de `items` deve ser igual a `value`, e cada item possui sua própria `external_reference`. A referência externa do checkout é calculada como `checkout:{system}:{system_payment_id}`. As três URLs de retorno devem usar host permitido: `neectify.com` e `*.neectify.com` são aceitos por padrão, e hosts extras podem ser adicionados em `ALLOWED_CHECKOUT_REDIRECT_HOSTS`.
 
 #### Resposta `202`
 

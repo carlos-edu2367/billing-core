@@ -4,6 +4,9 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+DEFAULT_CHECKOUT_REDIRECT_HOSTS: tuple[str, ...] = ("neectify.com",)
+
+
 class InternalApiClientConfig(BaseModel):
     api_key: str
     scopes: list[str] = Field(default_factory=list)
@@ -60,6 +63,15 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.APP_ENV.strip().lower() in {"production", "prod"}
 
+    @property
+    def effective_checkout_redirect_hosts(self) -> list[str]:
+        seen: dict[str, None] = {}
+        for host in (*DEFAULT_CHECKOUT_REDIRECT_HOSTS, *self.ALLOWED_CHECKOUT_REDIRECT_HOSTS):
+            normalized = host.strip().lower()
+            if normalized:
+                seen.setdefault(normalized, None)
+        return list(seen)
+
     @cached_property
     def resolved_asaas_base_url(self) -> str:
         if self.ASAAS_BASE_URL:
@@ -92,9 +104,6 @@ class Settings(BaseSettings):
 
         if self.is_production and not self.ALLOWED_INTERNAL_WEBHOOK_HOSTS:
             raise RuntimeError("Configuracao invalida: ALLOWED_INTERNAL_WEBHOOK_HOSTS e obrigatorio em producao.")
-
-        if self.is_production and not self.ALLOWED_CHECKOUT_REDIRECT_HOSTS:
-            raise RuntimeError("Configuracao invalida: ALLOWED_CHECKOUT_REDIRECT_HOSTS e obrigatorio em producao.")
 
         if self.is_production and not self.INTERNAL_API_CLIENTS:
             raise RuntimeError("Configuracao invalida: INTERNAL_API_CLIENTS nao pode estar vazio em producao.")

@@ -326,14 +326,29 @@ def test_payment_checkout_requires_redirect_hosts_configuration(monkeypatch):
         CreatePaymentRequest.model_validate(checkout_payload())
 
 
-def test_payment_checkout_requires_redirect_hosts_in_production(monkeypatch):
+def test_payment_checkout_allows_neectify_com_by_default(monkeypatch):
+    monkeypatch.setattr(settings, "ALLOWED_CHECKOUT_REDIRECT_HOSTS", [], raising=False)
+
+    checkout = CreatePaymentRequest.model_validate(
+        checkout_payload(
+            success_url="https://app.neectify.com/billing/success",
+            cancel_url="https://app.neectify.com/billing/cancel",
+            expired_url="https://neectify.com/billing/expired",
+        )
+    )
+
+    assert checkout.success_url == "https://app.neectify.com/billing/success"
+
+
+def test_payment_checkout_does_not_require_redirect_hosts_in_production(monkeypatch):
     monkeypatch.setattr(settings, "APP_ENV", "production")
     monkeypatch.setattr(settings, "ASAAS_BASE_URL", "https://api.asaas.com/v3")
     monkeypatch.setattr(settings, "ALLOWED_CHECKOUT_REDIRECT_HOSTS", [], raising=False)
     monkeypatch.delitem(settings.__dict__, "resolved_asaas_base_url", raising=False)
 
-    with pytest.raises(RuntimeError, match="ALLOWED_CHECKOUT_REDIRECT_HOSTS"):
-        settings.validate_runtime()
+    settings.validate_runtime()
+
+    assert settings.effective_checkout_redirect_hosts == ["neectify.com"]
 
 
 def test_payment_links_route_is_removed(client):
