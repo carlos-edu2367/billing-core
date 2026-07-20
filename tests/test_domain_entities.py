@@ -154,6 +154,46 @@ def test_standalone_payment_can_be_marked_overdue_before_payment():
     assert payment.payment_status == PaymentStatus.OVERDUE
 
 
+@pytest.mark.parametrize("initial_status", [PaymentStatus.PENDING, PaymentStatus.OVERDUE])
+def test_payment_mark_as_expired_accepts_pending_and_overdue(initial_status):
+    payment = Payment.create_standalone_payment(
+        description="Pedido 123",
+        gateway=GatewayProvider.ASAAS,
+        system_payment_id="order-123",
+        provider_payment_id="checkout_123",
+        value=Decimal("79.90"),
+        from_system=System.NEECTIFY_SHOP,
+        checkout_link="https://www.asaas.com/c/checkout_123",
+        webhook_link="https://hooks.neectify.local/billing/payment",
+        due_date=None,
+        external_reference="checkout:neectify_shop:order-123",
+    )
+    payment.payment_status = initial_status
+
+    payment.mark_as_expired()
+
+    assert payment.payment_status == PaymentStatus.EXPIRED
+
+
+def test_payment_mark_as_expired_rejects_terminal_payment():
+    payment = Payment.create_standalone_payment(
+        description="Pedido 123",
+        gateway=GatewayProvider.ASAAS,
+        system_payment_id="order-123",
+        provider_payment_id="checkout_123",
+        value=Decimal("79.90"),
+        from_system=System.NEECTIFY_SHOP,
+        checkout_link="https://www.asaas.com/c/checkout_123",
+        webhook_link="https://hooks.neectify.local/billing/payment",
+        due_date=None,
+        external_reference="checkout:neectify_shop:order-123",
+    )
+    payment.payment_status = PaymentStatus.PAID
+
+    with pytest.raises(DomainError, match="Nao e possivel expirar esse pagamento"):
+        payment.mark_as_expired()
+
+
 def test_subscription_monthly_mark_as_paid_advances_by_one_calendar_month():
     base = datetime(2026, 1, 31, tzinfo=timezone.utc)
     subscription = Subscription(

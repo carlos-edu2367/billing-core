@@ -165,6 +165,12 @@ class Payment:
         self.payment_status = PaymentStatus.OVERDUE
         self.updated_at = datetime.now(timezone.utc)
 
+    def mark_as_expired(self):
+        if self.payment_status not in {PaymentStatus.PENDING, PaymentStatus.OVERDUE}:
+            raise DomainError("Nao e possivel expirar esse pagamento.")
+        self.payment_status = PaymentStatus.EXPIRED
+        self.updated_at = datetime.now(timezone.utc)
+
     def mark_as_paid(self, payment_date: datetime | None = None, net_value: Decimal | None = None):
         if self.payment_status == PaymentStatus.PAID:
             return

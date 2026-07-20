@@ -40,6 +40,14 @@ class ProcessWebhookService():
                 payload=payload.model_dump(mode="json"),
             )
 
+        if payload.event in {
+            EventType.CHECKOUT_CREATED,
+            EventType.CHECKOUT_PAID,
+            EventType.CHECKOUT_CANCELED,
+            EventType.CHECKOUT_EXPIRED,
+        }:
+            return await self._process_checkout_webhook(event_id, event, payload)
+
         if payload.details.id and not payload.details.subscription:
             payment = await self.payment_repo.get_by_provider_id(payload.details.id)
             if payment is None and payload.details.external_reference:
@@ -249,3 +257,79 @@ class ProcessWebhookService():
             )
 
         return None
+
+    async def _process_checkout_webhook(
+        self,
+        event_id: str,
+        event: WebhookEvent,
+        payload: WebhookPayload,
+    ) -> ProcessWebhookResponse | None:
+        payment = None
+        if payload.details.id:
+            payment = await self.payment_repo.get_by_provider_id(payload.details.id)
+        if payment is None and payload.details.external_reference:
+            payment = await self.payment_repo.get_by_external_reference(payload.details.external_reference)
+
+        if payment is None:
+            logger.warning(
+                "Checkout nao encontrado para processamento",
+                extra={"event_id": event_id, "checkout_id": payload.details.id},
+            )
+            await self._mark_event_processed(event)
+            return None
+
+        if payload.event == EventType.CHECKOUT_CREATED:
+            await self._mark_event_processed(event)
+            return None
+
+        target_status = {
+            EventType.CHECKOUT_PAID: PaymentStatus.PAID,
+            EventType.CHECKOUT_CANCELED: PaymentStatus.CANCELED,
+            EventType.CHECKOUT_EXPIRED: PaymentStatus.EXPIRED,
+        }[payload.event]
+        if payment.payment_status == target_status:
+            await self._mark_event_processed(event)
+            return None
+
+        terminal_statuses = {
+            PaymentStatus.PAID,
+            PaymentStatus.CANCELED,
+            PaymentStatus.EXPIRED,
+            PaymentStatus.REFUNDED,
+            PaymentStatus.FAILED,
+        }
+        if payment.payment_status in terminal_statuses:
+            logger.warning(
+                "Conflito de estado terminal do checkout ignorado",
+                extra={
+                    "event_id": event_id,
+                    "checkout_id": payload.details.id,
+                    "current_status": payment.payment_status.value,
+                    "target_status": target_status.value,
+                },
+            )
+            await self._mark_event_processed(event)
+            return None
+
+        if payload.event == EventType.CHECKOUT_PAID:
+            payment.mark_as_paid(
+                payment_date=payload.details.payment_date,
+                net_value=payload.details.net_value,
+            )
+        elif payload.event == EventType.CHECKOUT_CANCELED:
+            payment.mark_as_canceled()
+        else:
+            payment.mark_as_expired()
+
+        payment = await self.payment_repo.save(payment)
+        await self._mark_event_processed(event)
+        return ProcessWebhookResponse(
+            event=InternalEventType.PAYMENT_STATUS_UPDATED,
+            payment_id=payment.id,
+            subscription_id=None,
+        )
+
+    async def _mark_event_processed(self, event: WebhookEvent) -> None:
+        event.mark_as_processed()
+        await self.webhook_event_repo.save(event)
+        await self.uow.commit()

@@ -98,6 +98,28 @@ class AsaasProvider(InterfaceGateway):
 
         event = payload.get("event")
         source_event_id = payload.get("id")
+        checkout = payload.get("checkout") or {}
+        if checkout:
+            value = checkout.get("value")
+            if value is None:
+                value = sum(
+                    Decimal(str(item.get("value", 0))) * Decimal(str(item.get("quantity", 1)))
+                    for item in checkout.get("items", [])
+                )
+
+            return WebhookPayload.model_validate(
+                {
+                    "event": event,
+                    "source_event_id": source_event_id,
+                    "details": {
+                        "id": checkout.get("id"),
+                        "status": checkout.get("status"),
+                        "value": value,
+                        "external_reference": checkout.get("externalReference"),
+                    },
+                }
+            )
+
         payment = payload.get("payment") or {}
         subscription = payload.get("subscription") or {}
 

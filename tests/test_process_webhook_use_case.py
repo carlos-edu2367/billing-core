@@ -150,6 +150,109 @@ def make_standalone_payment(provider_payment_id="pay-1"):
     return payment
 
 
+def make_checkout_payload(event, source_event_id="evt-checkout-1"):
+    return WebhookPayload(
+        event=event,
+        source_event_id=source_event_id,
+        details=Details(
+            id="checkout_123",
+            status=event.value.removeprefix("CHECKOUT_"),
+            value=Decimal("72"),
+            external_reference="checkout:neectify_shop:order-123",
+        ),
+    )
+
+
+def make_checkout_payment():
+    return make_standalone_payment(provider_payment_id="checkout_123")
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_acknowledges_checkout_created_without_delivery():
+    payment = make_checkout_payment()
+    payment_repo = FakePaymentRepo(existing=payment)
+    webhook_repo = FakeWebhookEventRepo()
+    service = ProcessWebhookService(payment_repo, FakeSubscriptionRepo(None), FakeUow(), webhook_repo)
+
+    response = await service.execute(
+        GatewayProvider.ASAAS, make_checkout_payload(EventType.CHECKOUT_CREATED)
+    )
+
+    assert response is None
+    assert payment_repo.saved == []
+    assert webhook_repo.existing_event.processed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event", "expected_status"),
+    [
+        (EventType.CHECKOUT_PAID, PaymentStatus.PAID),
+        (EventType.CHECKOUT_CANCELED, PaymentStatus.CANCELED),
+        (EventType.CHECKOUT_EXPIRED, PaymentStatus.EXPIRED),
+    ],
+)
+async def test_process_webhook_transitions_checkout_and_emits_status_update(event, expected_status):
+    payment = make_checkout_payment()
+    payment_repo = FakePaymentRepo(existing=payment)
+    service = ProcessWebhookService(payment_repo, FakeSubscriptionRepo(None), FakeUow(), FakeWebhookEventRepo())
+
+    response = await service.execute(GatewayProvider.ASAAS, make_checkout_payload(event))
+
+    assert payment.payment_status == expected_status
+    assert response.event.value == "PAYMENT_STATUS_UPDATED"
+    assert response.payment_id == payment.id
+    assert payment_repo.saved == [payment]
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_ignores_duplicate_checkout_source_event():
+    payment = make_checkout_payment()
+    payment_repo = FakePaymentRepo(existing=payment)
+    webhook_repo = FakeWebhookEventRepo()
+    service = ProcessWebhookService(payment_repo, FakeSubscriptionRepo(None), FakeUow(), webhook_repo)
+    payload = make_checkout_payload(EventType.CHECKOUT_PAID)
+
+    await service.execute(GatewayProvider.ASAAS, payload)
+    response = await service.execute(GatewayProvider.ASAAS, payload)
+
+    assert response is None
+    assert len(payment_repo.saved) == 1
+    assert len(webhook_repo.saved) == 1
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_marks_unknown_checkout_processed_without_delivery():
+    payment_repo = FakePaymentRepo()
+    webhook_repo = FakeWebhookEventRepo()
+    service = ProcessWebhookService(payment_repo, FakeSubscriptionRepo(None), FakeUow(), webhook_repo)
+
+    response = await service.execute(GatewayProvider.ASAAS, make_checkout_payload(EventType.CHECKOUT_PAID))
+
+    assert response is None
+    assert payment_repo.saved == []
+    assert webhook_repo.existing_event.processed is True
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_ignores_conflicting_checkout_terminal_event():
+    payment = make_checkout_payment()
+    payment.payment_status = PaymentStatus.EXPIRED
+    payment_repo = FakePaymentRepo(existing=payment)
+    webhook_repo = FakeWebhookEventRepo()
+    service = ProcessWebhookService(payment_repo, FakeSubscriptionRepo(None), FakeUow(), webhook_repo)
+
+    response = await service.execute(
+        GatewayProvider.ASAAS,
+        make_checkout_payload(EventType.CHECKOUT_CANCELED, source_event_id="evt-checkout-conflict"),
+    )
+
+    assert response is None
+    assert payment.payment_status == PaymentStatus.EXPIRED
+    assert payment_repo.saved == []
+    assert webhook_repo.existing_event.processed is True
+
+
 @pytest.mark.asyncio
 async def test_process_webhook_creates_payment_and_marks_subscription_as_paid():
     subscription = make_subscription()
@@ -621,4 +724,3 @@ async def test_process_webhook_payment_deleted_after_confirmed_for_subscription(
 
     assert response is None
     assert payment.payment_status == PaymentStatus.CANCELED
-

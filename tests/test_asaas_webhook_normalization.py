@@ -1,5 +1,6 @@
 from app.application.dtos.request.webhook import WebhookPayload
 from app.infra.interfaces.asaas_provider import AsaasProvider
+from decimal import Decimal
 
 
 def make_asaas_payment_link_webhook():
@@ -66,3 +67,24 @@ def test_normalized_webhook_payload_accepts_iso_datetime_payment_date_with_z():
     )
 
     assert payload.details.payment_date.isoformat() == "2026-05-27T00:00:00+00:00"
+
+
+def test_asaas_checkout_webhook_normalizes_checkout_details_and_item_value():
+    payload = AsaasProvider().normalize_webhook(
+        {
+            "id": "evt-checkout-1",
+            "event": "CHECKOUT_PAID",
+            "checkout": {
+                "id": "checkout_123",
+                "status": "PAID",
+                "externalReference": "checkout:marketfy:order-123",
+                "items": [{"quantity": 1, "value": 72}],
+            },
+        }
+    )
+
+    assert payload.event.value == "CHECKOUT_PAID"
+    assert payload.source_event_id == "evt-checkout-1"
+    assert payload.details.id == "checkout_123"
+    assert payload.details.external_reference == "checkout:marketfy:order-123"
+    assert payload.details.value == Decimal("72")
