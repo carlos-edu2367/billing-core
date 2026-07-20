@@ -114,6 +114,14 @@ async def test_asaas_provider_creates_detached_checkout_payload():
                 "id": "checkout_123",
                 "link": "https://sandbox.asaas.com/checkoutSession/show/checkout_123",
                 "status": "ACTIVE",
+            },
+            "checkout:marketfy:order-123",
+        ),
+        (
+            {
+                "id": "checkout_123",
+                "link": "https://sandbox.asaas.com/checkoutSession/show/checkout_123",
+                "status": "ACTIVE",
                 "externalReference": "checkout:marketfy:another-order",
             },
             "checkout:marketfy:order-123",
