@@ -8,6 +8,7 @@ from app.application.dtos.request.webhook import WebhookPayload
 from app.application.interfaces.gateway_provider import (
     CreateCheckoutGatewayResponse,
     CreatePaymentGatewayResponse,
+    CreatePaymentLinkGatewayResponse,
     GetCustomerResponse,
     InterfaceGateway,
     PaymentStatusGatewayResponse,
@@ -234,6 +235,30 @@ class AsaasProvider(InterfaceGateway):
             checkout_url=checkout_url,
             status=status,
             external_reference=response_external_reference,
+        )
+
+    async def create_payment_link(
+        self,
+        name: str,
+        value: Decimal,
+        billing_type: PaymentType,
+        description: str,
+        external_reference: str,
+        due_date_limit_days: int = 3,
+    ) -> CreatePaymentLinkGatewayResponse:
+        payload = {
+            "name": name,
+            "value": float(value),
+            "billingType": billing_type.value,
+            "chargeType": "DETACHED",
+            "dueDateLimitDays": due_date_limit_days,
+            "description": description,
+            "externalReference": external_reference,
+        }
+        response = await self.asaas.post("/paymentLinks", payload)
+        return CreatePaymentLinkGatewayResponse(
+            payment_link_id=response["id"],
+            checkout_url=response["url"],
         )
 
     async def get_payment(self, payment_id: str) -> PaymentStatusGatewayResponse:
