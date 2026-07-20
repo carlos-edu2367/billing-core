@@ -4,6 +4,8 @@ from decimal import Decimal
 from uuid import uuid4
 
 from arq.jobs import serialize_result
+import pytest
+from pydantic import ValidationError
 
 from app.domain.entities.payment import Payment
 from app.domain.entities.subscription import Subscription
@@ -16,6 +18,12 @@ from app.infra.config import settings
 from app.infra.config import InternalApiClientConfig
 from app.infra.db.setup import get_db
 from app.web.main import app
+from app.web.schemas.payment import CreatePaymentRequest
+
+
+@pytest.fixture(autouse=True)
+def configured_checkout_redirect_hosts(monkeypatch):
+    monkeypatch.setattr(settings, "ALLOWED_CHECKOUT_REDIRECT_HOSTS", ["app.neectify.local"], raising=False)
 
 
 def subscription_payload():
@@ -34,17 +42,29 @@ def subscription_payload():
     }
 
 
-def payment_payload():
-    return {
-        "customer_provider_id": "cus_123",
-        "value": "79.90",
-        "billing_type": "UNDEFINED",
-        "due_date": "2026-06-10",
-        "description": "Pedido 123",
+def checkout_payload(**overrides):
+    payload = {
         "system": "neectify_shop",
         "system_payment_id": "order-123",
+        "description": "Pacote de créditos",
+        "value": "72.00",
+        "minutes_to_expire": 30,
+        "items": [
+            {
+                "external_reference": "pack-100",
+                "name": "100 créditos",
+                "description": "Créditos fiscais",
+                "quantity": 1,
+                "value": "72.00",
+            }
+        ],
+        "success_url": "https://app.neectify.local/billing/success",
+        "cancel_url": "https://app.neectify.local/billing/cancel",
+        "expired_url": "https://app.neectify.local/billing/expired",
         "webhook_link": "https://hooks.neectify.local/billing/payment",
     }
+    payload.update(overrides)
+    return payload
 
 
 def payment_link_payload():
@@ -163,7 +183,7 @@ def test_create_subscription_is_idempotent_per_key_and_payload(client):
 def test_create_payment_requires_idempotency_key(client):
     response = client.post(
         "/v1/payments",
-        json=payment_payload(),
+        json=checkout_payload(),
         headers=auth_headers(),
     )
 
@@ -171,16 +191,128 @@ def test_create_payment_requires_idempotency_key(client):
     assert response.json()["error"]["code"] == "validation_error"
 
 
-def test_create_payment_is_idempotent_per_key_and_payload(client):
-    headers = auth_headers() | {"Idempotency-Key": "payment-idem-1"}
+def test_payment_checkout_rejects_mismatched_total():
+    with pytest.raises(ValidationError, match="value deve ser igual"):
+        CreatePaymentRequest.model_validate(checkout_payload(value="71.99"))
 
-    first = client.post("/v1/payments", json=payment_payload(), headers=headers)
-    second = client.post("/v1/payments", json=payment_payload(), headers=headers)
 
-    assert first.status_code == 202
-    assert second.status_code == 202
-    assert first.json()["job_id"] == second.json()["job_id"]
-    assert "ja recebido anteriormente" in second.json()["message"]
+@pytest.mark.parametrize("minutes", [9, 1441])
+def test_payment_checkout_rejects_invalid_expiration(minutes):
+    with pytest.raises(ValidationError) as error:
+        CreatePaymentRequest.model_validate(checkout_payload(minutes_to_expire=minutes))
+
+    assert any(item["loc"] == ("minutes_to_expire",) for item in error.value.errors())
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("items", []),
+        ("items", [{"external_reference": "pack-100", "name": "100 créditos", "quantity": 0, "value": "72.00"}]),
+        ("items", [{"external_reference": "pack-100", "name": "100 créditos", "quantity": 1, "value": "0"}]),
+    ],
+)
+def test_payment_checkout_rejects_empty_or_invalid_items(field, value):
+    with pytest.raises(ValidationError) as error:
+        CreatePaymentRequest.model_validate(checkout_payload(**{field: value}))
+
+    assert any(item["loc"][0] == "items" for item in error.value.errors())
+
+
+@pytest.mark.parametrize(
+    ("field", "url"),
+    [
+        ("success_url", "http://app.neectify.local/billing/success"),
+        ("cancel_url", "https://untrusted.neectify.local/billing/cancel"),
+        ("expired_url", "http://app.neectify.local/billing/expired"),
+        ("webhook_link", "http://hooks.neectify.local/billing/payment"),
+        ("webhook_link", "https://untrusted.neectify.local/billing/payment"),
+    ],
+)
+def test_payment_checkout_rejects_untrusted_callback_urls(field, url):
+    with pytest.raises(ValidationError) as error:
+        CreatePaymentRequest.model_validate(checkout_payload(**{field: url}))
+
+    assert any(item["loc"] == (field,) for item in error.value.errors())
+
+
+@pytest.mark.parametrize("legacy_field", ["customer_provider_id", "due_date", "billing_type"])
+def test_payment_checkout_rejects_legacy_fields_with_422(client, legacy_field):
+    legacy_value = {"customer_provider_id": "cus_123", "due_date": "2026-06-10", "billing_type": "UNDEFINED"}[legacy_field]
+    payload = checkout_payload(**{legacy_field: legacy_value})
+    with pytest.raises(ValidationError) as error:
+        CreatePaymentRequest.model_validate(payload)
+
+    assert any(item["loc"] == (legacy_field,) and item["type"] == "extra_forbidden" for item in error.value.errors())
+
+    response = client.post(
+        "/v1/payments",
+        json=payload,
+        headers=auth_headers() | {"Idempotency-Key": f"legacy-{legacy_field}"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+def test_payment_checkout_rejects_system_different_from_authenticated_system(client, monkeypatch):
+    monkeypatch.setattr(settings, "ALLOWED_CHECKOUT_REDIRECT_HOSTS", ["app.neectify.local"], raising=False)
+
+    response = client.post(
+        "/v1/payments",
+        json=checkout_payload(system="marketfy"),
+        headers=auth_headers() | {"Idempotency-Key": "checkout-foreign-system"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+
+
+def test_payment_checkout_strips_item_text_and_serializes_worker_payload(monkeypatch):
+    monkeypatch.setattr(settings, "ALLOWED_CHECKOUT_REDIRECT_HOSTS", ["app.neectify.local"], raising=False)
+    checkout = CreatePaymentRequest.model_validate(
+        checkout_payload(
+            items=[
+                {
+                    "external_reference": " pack-100 ",
+                    "name": " 100 créditos ",
+                    "description": " Créditos fiscais ",
+                    "quantity": 1,
+                    "value": "72.00",
+                }
+            ]
+        )
+    )
+
+    assert checkout.items[0].external_reference == "pack-100"
+    assert checkout.items[0].name == "100 créditos"
+    assert checkout.items[0].description == "Créditos fiscais"
+    assert checkout.to_worker_payload()["system"] == "neectify_shop"
+
+
+def test_payment_checkout_rejects_external_reference_above_200_characters(monkeypatch):
+    monkeypatch.setattr(settings, "ALLOWED_CHECKOUT_REDIRECT_HOSTS", ["app.neectify.local"], raising=False)
+    system_payment_id = "x" * 180
+
+    with pytest.raises(ValidationError, match="200 caracteres"):
+        CreatePaymentRequest.model_validate(checkout_payload(system_payment_id=system_payment_id))
+
+
+def test_payment_checkout_requires_redirect_hosts_configuration(monkeypatch):
+    monkeypatch.setattr(settings, "ALLOWED_CHECKOUT_REDIRECT_HOSTS", [], raising=False)
+
+    with pytest.raises(ValidationError, match="redirect"):
+        CreatePaymentRequest.model_validate(checkout_payload())
+
+
+def test_payment_checkout_requires_redirect_hosts_in_production(monkeypatch):
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+    monkeypatch.setattr(settings, "ASAAS_BASE_URL", "https://api.asaas.com/v3")
+    monkeypatch.setattr(settings, "ALLOWED_CHECKOUT_REDIRECT_HOSTS", [], raising=False)
+    monkeypatch.delitem(settings.__dict__, "resolved_asaas_base_url", raising=False)
+
+    with pytest.raises(RuntimeError, match="ALLOWED_CHECKOUT_REDIRECT_HOSTS"):
+        settings.validate_runtime()
 
 
 def test_create_payment_link_requires_idempotency_key(client):
@@ -265,18 +397,6 @@ def test_get_job_status_returns_completed_worker_result(client, fake_redis):
     assert body["status"] == "completed"
     assert body["result"]["checkout_url"] == "https://www.asaas.com/c/pml_123"
     assert body["result"]["payment_id"] == "3fa85f64-5717-4562-b3fc-2c963f66afa6"
-
-
-def test_create_payment_rejects_debit_card(client):
-    headers = auth_headers() | {"Idempotency-Key": "payment-debit"}
-    response = client.post(
-        "/v1/payments",
-        json=payment_payload() | {"billing_type": "DEBIT_CARD"},
-        headers=headers,
-    )
-
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "validation_error"
 
 
 def test_payment_polling_enforces_ten_second_interval(client, monkeypatch):

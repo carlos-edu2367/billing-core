@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     INTERNAL_API_CLIENTS: dict[str, InternalApiClientConfig] = Field(default_factory=dict)
     CORS_ALLOW_ORIGINS: list[str] = Field(default_factory=list)
     ALLOWED_INTERNAL_WEBHOOK_HOSTS: list[str] = Field(default_factory=list)
+    ALLOWED_CHECKOUT_REDIRECT_HOSTS: list[str] = Field(default_factory=list)
     TRUST_PROXY_HEADERS: bool = False
     INTERNAL_RATE_LIMIT_REQUESTS: int = 60
     INTERNAL_RATE_LIMIT_WINDOW_SECONDS: int = 60
@@ -91,6 +92,9 @@ class Settings(BaseSettings):
 
         if self.is_production and not self.ALLOWED_INTERNAL_WEBHOOK_HOSTS:
             raise RuntimeError("Configuracao invalida: ALLOWED_INTERNAL_WEBHOOK_HOSTS e obrigatorio em producao.")
+
+        if self.is_production and not self.ALLOWED_CHECKOUT_REDIRECT_HOSTS:
+            raise RuntimeError("Configuracao invalida: ALLOWED_CHECKOUT_REDIRECT_HOSTS e obrigatorio em producao.")
 
         if self.is_production and not self.INTERNAL_API_CLIENTS:
             raise RuntimeError("Configuracao invalida: INTERNAL_API_CLIENTS nao pode estar vazio em producao.")
