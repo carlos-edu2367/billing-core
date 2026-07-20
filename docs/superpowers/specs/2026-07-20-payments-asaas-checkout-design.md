@@ -152,7 +152,7 @@ O normalizador Asaas reconhecerá objetos `checkout`, preservará o ID do evento
 | `CHECKOUT_CREATED` | mantém `pending`; sem notificação | não envia |
 | `CHECKOUT_PAID` | marca como `paid` | envia `PAYMENT_STATUS_UPDATED` |
 | `CHECKOUT_CANCELED` | marca como `canceled` | envia `PAYMENT_STATUS_UPDATED` |
-| `CHECKOUT_EXPIRED` | marca como `canceled` | envia `PAYMENT_STATUS_UPDATED` |
+| `CHECKOUT_EXPIRED` | marca como `expired` | envia `PAYMENT_STATUS_UPDATED` |
 
 Eventos duplicados não poderão gerar transições ou notificações duplicadas. Eventos desconhecidos ou sem pagamento local serão registrados de forma observável e reconhecidos sem falhar o endpoint de webhook. A URL de callback nunca é usada para liberar produto; apenas o webhook assinado pode fazer isso.
 
