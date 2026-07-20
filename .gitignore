@@ -22,6 +22,7 @@ env/
 .ruff_cache/
 .coverage
 htmlcov/
+.worktrees/
 
 # Editors / OS
 .DS_Store
