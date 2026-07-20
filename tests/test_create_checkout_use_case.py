@@ -15,6 +15,7 @@ from app.domain.enums.payment_status import PaymentStatus
 from app.domain.enums.payment_type import PaymentType
 from app.domain.enums.system import System
 from app.domain.errors import DomainError
+from app.infra.interfaces.asaas_provider import AsaasAPIError
 
 
 class FakeCheckoutGateway:
@@ -46,6 +47,13 @@ class TimeoutAfterCheckoutRequestGateway(FakeCheckoutGateway):
         self.create_checkout_called += 1
         self.last_kwargs = kwargs
         raise httpx.ReadTimeout("checkout response lost after request dispatch")
+
+
+class ClientErrorCheckoutGateway(FakeCheckoutGateway):
+    async def create_checkout(self, **kwargs):
+        self.create_checkout_called += 1
+        self.last_kwargs = kwargs
+        raise AsaasAPIError(400, "invalid checkout", "POST", "/checkouts")
 
 
 class FailingGetGateway:
@@ -331,3 +339,33 @@ async def test_create_checkout_does_not_retry_when_gateway_timeout_has_uncertain
         await service.execute(make_request(), GatewayProvider.ASAAS)
 
     assert gateway.create_checkout_called == 1
+
+
+@pytest.mark.asyncio
+async def test_create_checkout_retries_after_asaas_client_error_is_corrected():
+    rejected_gateway = ClientErrorCheckoutGateway()
+    get_gateway = FakeGetGateway(rejected_gateway)
+    operation_repo = FakeGatewayOperationRepo()
+    service = CreateCheckout(
+        get_gateway=get_gateway,
+        uow=FakeUow(),
+        payment_repo=FakePaymentRepo(),
+        gateway_operation_repo=operation_repo,
+    )
+
+    with pytest.raises(AsaasAPIError, match="invalid checkout"):
+        await service.execute(make_request(), GatewayProvider.ASAAS)
+
+    operation = operation_repo.saved[-1]
+    assert operation.status == GatewayOperationStatus.FAILED
+    assert operation.gateway_reference is None
+
+    successful_gateway = FakeCheckoutGateway()
+    get_gateway.gateway = successful_gateway
+
+    response = await service.execute(make_request(), GatewayProvider.ASAAS)
+
+    assert rejected_gateway.create_checkout_called == 1
+    assert successful_gateway.create_checkout_called == 1
+    assert response.checkout_url == "https://sandbox.asaas.com/checkoutSession/show/checkout_123"
+    assert operation_repo.saved[-1].status == GatewayOperationStatus.COMPLETED
