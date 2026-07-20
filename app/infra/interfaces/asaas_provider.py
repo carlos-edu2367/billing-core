@@ -237,7 +237,7 @@ class AsaasProvider(InterfaceGateway):
         checkout_url = response.get("link")
         status = response.get("status")
         response_external_reference = response.get("externalReference")
-        if not checkout_id or not checkout_url or not status:
+        if not checkout_id or not checkout_url or not status or not response_external_reference:
             raise DomainError("Resposta de checkout do Asaas incompleta.")
         return CreateCheckoutGatewayResponse(
             checkout_id=checkout_id,

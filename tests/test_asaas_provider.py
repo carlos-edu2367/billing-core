@@ -169,6 +169,7 @@ async def test_asaas_provider_gets_checkout_with_same_response_validation():
         {"link": "https://checkout", "status": "ACTIVE", "externalReference": "checkout:marketfy:order-123"},
         {"id": "checkout_123", "status": "ACTIVE", "externalReference": "checkout:marketfy:order-123"},
         {"id": "checkout_123", "link": "https://checkout", "externalReference": "checkout:marketfy:order-123"},
+        {"id": "checkout_123", "link": "https://checkout", "status": "ACTIVE"},
     ],
 )
 async def test_asaas_provider_rejects_incomplete_get_checkout_response(response: dict):
