@@ -14,6 +14,7 @@ from app.infra.interfaces.asaas_provider import AsaasAPIError
 from app.application.use_cases.create_subscription import CreateSubscription
 from app.application.use_cases.reconcile_payment import ReconcilePayment
 from app.domain.entities.internal_webhook_delivery import InternalWebhookDelivery
+from app.domain.entities.payment import Payment
 from app.domain.entities.subscription import Subscription, SubscriptionStatus
 from app.domain.enums.gateway_operation_status import GatewayOperationStatus
 from app.domain.errors import DomainError, NotFoundError
@@ -934,7 +935,9 @@ async def reconcile_gateway_operations_worker(ctx):
                 op_repo = GatewayOperationRepositoryINFRA(session)
                 sub_repo = SubscriptionRepositoryINFRA(session)
                 payment_repo = PaymentRepositoryINFRA(session)
+                delivery_repo = InternalWebhookDeliveryRepositoryINFRA(session)
                 get_gateway = GetGatewayInfra()
+                internal_delivery_id: UUID | None = None
 
                 try:
                     async with session.begin():
@@ -1016,7 +1019,67 @@ async def reconcile_gateway_operations_worker(ctx):
                                 op.mark_completed(gateway_reference=op.gateway_reference)
                                 await op_repo.save(op)
                                 ctx["logger"].info(f"Reconciled cancel_subscription for {op.gateway_reference}")
+                        elif op.operation_name == "create_checkout":
+                            checkout = await gateway.get_checkout(op.gateway_reference)
+                            system = System(op.system) if isinstance(op.system, str) else op.system
+                            expected_external_reference = f"checkout:{system.value}:{op.request_payload['system_payment_id']}"
+                            if checkout.external_reference != expected_external_reference:
+                                raise DomainError("Checkout remoto retornou externalReference divergente durante reconciliacao.")
+
+                            checkout_status = checkout.status.upper()
+                            payment_statuses = {
+                                "ACTIVE": PaymentStatus.PENDING,
+                                "PAID": PaymentStatus.PAID,
+                                "CANCELED": PaymentStatus.CANCELED,
+                                "EXPIRED": PaymentStatus.EXPIRED,
+                            }
+                            local_status = payment_statuses.get(checkout_status)
+                            if local_status is None:
+                                raise DomainError(f"Status de checkout remoto desconhecido: {checkout.status}")
+
+                            payment = await payment_repo.get_by_system_ref(
+                                op.request_payload["system_payment_id"],
+                                system,
+                            )
+                            if payment is None:
+                                payment = Payment.create_standalone_payment(
+                                    description=op.request_payload.get("description", ""),
+                                    gateway=op.provider,
+                                    system_payment_id=op.request_payload["system_payment_id"],
+                                    provider_payment_id=checkout.checkout_id,
+                                    value=Decimal(str(op.request_payload["value"])),
+                                    from_system=system,
+                                    checkout_link=checkout.checkout_url,
+                                    webhook_link=op.request_payload.get("webhook_link"),
+                                    due_date=None,
+                                    external_reference=expected_external_reference,
+                                )
+                                payment.payment_type = PaymentType.UNDEFINED
+                                payment.payment_status = local_status
+                                payment = await payment_repo.save(payment)
+                            elif payment.payment_status != local_status:
+                                payment.payment_status = local_status
+                                payment.updated_at = datetime.now(timezone.utc)
+                                payment = await payment_repo.save(payment)
+
+                            if checkout_status in {"PAID", "CANCELED", "EXPIRED"}:
+                                delivery = await _build_payment_internal_delivery(payment)
+                                if delivery is not None:
+                                    existing_delivery = await delivery_repo.get_by_dedupe_key(delivery.dedupe_key)
+                                    if existing_delivery is None:
+                                        delivery = await delivery_repo.save(delivery)
+                                        internal_delivery_id = delivery.id
+
+                            op.mark_completed(gateway_reference=checkout.checkout_id)
+                            await op_repo.save(op)
+                            ctx["logger"].info(f"Reconciled create_checkout for {op.gateway_reference}")
                 except Exception as e:
                     ctx["logger"].error(f"Failed to reconcile operation {op_id}: {str(e)}")
+                else:
+                    if internal_delivery_id is not None:
+                        await ctx["redis"].enqueue_job(
+                            "workers:tasks.send_internal_webhook",
+                            str(internal_delivery_id),
+                        )
     finally:
         await ctx["redis"].delete(lock_key)

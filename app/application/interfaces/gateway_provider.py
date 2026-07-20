@@ -132,6 +132,10 @@ class InterfaceGateway(ABC):
         pass
 
     @abstractmethod
+    async def get_checkout(self, checkout_id: str) -> CreateCheckoutGatewayResponse:
+        pass
+
+    @abstractmethod
     async def create_payment_link(
         self,
         name: str,

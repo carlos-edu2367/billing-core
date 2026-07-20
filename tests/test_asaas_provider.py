@@ -18,6 +18,10 @@ class FakeAsaasAPI:
         self.payload = payload
         return self.response
 
+    async def get(self, endpoint: str):
+        self.endpoint = endpoint
+        return self.response
+
 
 @pytest.mark.asyncio
 async def test_asaas_provider_creates_detached_checkout_payload():
@@ -134,6 +138,45 @@ async def test_asaas_provider_rejects_incomplete_or_mismatched_checkout_response
             callback={},
             items=[],
         )
+
+
+@pytest.mark.asyncio
+async def test_asaas_provider_gets_checkout_with_same_response_validation():
+    provider = AsaasProvider()
+    fake_api = FakeAsaasAPI(
+        {
+            "id": "checkout_123",
+            "link": "https://sandbox.asaas.com/checkoutSession/show/checkout_123",
+            "status": "PAID",
+            "externalReference": "checkout:marketfy:order-123",
+        }
+    )
+    provider.asaas = fake_api
+
+    response = await provider.get_checkout("checkout_123")
+
+    assert fake_api.endpoint == "/checkouts/checkout_123"
+    assert response.checkout_id == "checkout_123"
+    assert response.checkout_url == "https://sandbox.asaas.com/checkoutSession/show/checkout_123"
+    assert response.status == "PAID"
+    assert response.external_reference == "checkout:marketfy:order-123"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"link": "https://checkout", "status": "ACTIVE", "externalReference": "checkout:marketfy:order-123"},
+        {"id": "checkout_123", "status": "ACTIVE", "externalReference": "checkout:marketfy:order-123"},
+        {"id": "checkout_123", "link": "https://checkout", "externalReference": "checkout:marketfy:order-123"},
+    ],
+)
+async def test_asaas_provider_rejects_incomplete_get_checkout_response(response: dict):
+    provider = AsaasProvider()
+    provider.asaas = FakeAsaasAPI(response)
+
+    with pytest.raises(DomainError, match="incompleta"):
+        await provider.get_checkout("checkout_123")
 
 
 @pytest.mark.asyncio

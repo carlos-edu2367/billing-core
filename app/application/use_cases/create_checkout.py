@@ -64,10 +64,10 @@ class CreateCheckout:
             operation = await self.gateway_operation_repo.save(operation)
             await self.uow.commit()
 
-        gateway = self.get_gateway.get(gateway=gateway_provider)
         gateway_checkout_id = None
 
         try:
+            gateway = self.get_gateway.get(gateway=gateway_provider)
             checkout_info = await gateway.create_checkout(
                 billing_types=["PIX", "CREDIT_CARD"],
                 charge_types=["DETACHED"],

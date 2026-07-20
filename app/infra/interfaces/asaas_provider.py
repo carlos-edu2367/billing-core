@@ -221,15 +221,24 @@ class AsaasProvider(InterfaceGateway):
             "items": items,
         }
         response = await self.asaas.post("/checkouts", payload)
+        checkout = self._checkout_response(response)
+        if checkout.external_reference != external_reference:
+            raise DomainError("Checkout do Asaas retornou externalReference divergente.")
+
+        return checkout
+
+    async def get_checkout(self, checkout_id: str) -> CreateCheckoutGatewayResponse:
+        response = await self.asaas.get(f"/checkouts/{checkout_id}")
+        return self._checkout_response(response)
+
+    @staticmethod
+    def _checkout_response(response: dict) -> CreateCheckoutGatewayResponse:
         checkout_id = response.get("id")
         checkout_url = response.get("link")
         status = response.get("status")
         response_external_reference = response.get("externalReference")
         if not checkout_id or not checkout_url or not status:
             raise DomainError("Resposta de checkout do Asaas incompleta.")
-        if response_external_reference != external_reference:
-            raise DomainError("Checkout do Asaas retornou externalReference divergente.")
-
         return CreateCheckoutGatewayResponse(
             checkout_id=checkout_id,
             checkout_url=checkout_url,

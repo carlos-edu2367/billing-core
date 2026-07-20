@@ -40,6 +40,11 @@ class FakeGetGateway:
         return self.gateway
 
 
+class FailingGetGateway:
+    def get(self, gateway):
+        raise RuntimeError("gateway resolution failed")
+
+
 class FakePaymentRepo:
     def __init__(self, existing: Payment | None = None, fail_on_save: bool = False):
         self.existing = existing
@@ -276,3 +281,20 @@ async def test_create_checkout_marks_operation_for_reconciliation_when_local_sav
         await service.execute(make_request(), GatewayProvider.ASAAS)
 
     assert operation_repo.saved[-1].status == GatewayOperationStatus.REQUIRES_RECONCILIATION
+
+
+@pytest.mark.asyncio
+async def test_create_checkout_marks_persisted_operation_failed_when_gateway_resolution_raises():
+    operation_repo = FakeGatewayOperationRepo()
+    service = CreateCheckout(
+        get_gateway=FailingGetGateway(),
+        uow=FakeUow(),
+        payment_repo=FakePaymentRepo(),
+        gateway_operation_repo=operation_repo,
+    )
+
+    with pytest.raises(RuntimeError, match="gateway resolution failed"):
+        await service.execute(make_request(), GatewayProvider.ASAAS)
+
+    assert operation_repo.saved[-1].status == GatewayOperationStatus.FAILED
+    assert operation_repo.saved[-1].error_message == "gateway resolution failed"
