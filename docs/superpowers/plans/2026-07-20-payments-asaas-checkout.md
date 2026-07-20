@@ -218,7 +218,7 @@ git commit -m "feat: create detached checkouts through Asaas"
 **Files:**
 - Create: `app/application/use_cases/create_checkout.py`
 - Create: `tests/test_create_checkout_use_case.py`
-- Delete: `app/application/use_cases/create_payment.py`, `tests/test_create_payment_use_case.py`
+- Keep: `app/application/use_cases/create_payment.py`, `tests/test_create_payment_use_case.py` temporarily, because `create_payment_worker` remains registered until Task 4 removes the legacy flow atomically.
 
 **Interfaces:**
 - Produces `CreateCheckout.execute(request: CreateCheckoutDTO, gateway_provider: GatewayProvider) -> CreateCheckoutResponse`.
@@ -256,7 +256,7 @@ if existing_payment:
     return CreateCheckoutResponse(payment_id=existing_payment.id, checkout_url=existing_payment.checkout_link, payment_status=existing_payment.payment_status)
 ```
 
-Persist/commit `GatewayOperation(operation_name="create_checkout", dedupe_key=dedupe_key, ...)` before the remote call. Call `create_checkout` with fixed type lists and camelCase callback/item dictionaries. Create `Payment.create_standalone_payment` with checkout ID/link, no due date and the external reference; then set `payment_type = UNDEFINED`, `payment_status = PENDING`, save, mark the operation complete and commit. Preserve the current rollback plus `mark_requires_reconciliation` path if local persistence fails after remote success.
+Persist/commit `GatewayOperation(operation_name="create_checkout", dedupe_key=dedupe_key, ...)` before the remote call. Call `create_checkout` with fixed type lists and camelCase callback/item dictionaries. Create `Payment.create_standalone_payment` with checkout ID/link, no due date and the external reference; then set `payment_type = UNDEFINED`, `payment_status = PENDING`, save, mark the operation complete and commit. Preserve the current rollback plus `mark_requires_reconciliation` path if local persistence fails after remote success. Keep the direct-payment use case and its tests importable through this task; Task 4 removes them together with their worker.
 
 - [ ] **Step 4: Run the focused test**
 
@@ -268,7 +268,6 @@ Expected: PASS.
 
 ```bash
 git add app/application/use_cases/create_checkout.py tests/test_create_checkout_use_case.py
-git rm app/application/use_cases/create_payment.py tests/test_create_payment_use_case.py
 git commit -m "feat: persist idempotent payment checkouts"
 ```
 
@@ -277,7 +276,7 @@ git commit -m "feat: persist idempotent payment checkouts"
 **Files:**
 - Modify: `app/web/routes/payments.py`, `app/workers/tasks.py`, `app/workers/worker.py`, `app/web/main.py`
 - Modify: `tests/test_api_contracts.py`, `tests/test_payment_workers.py`
-- Delete: `app/web/routes/payment_links.py`, `app/web/schemas/payment_link.py`, `app/application/dtos/request/payment.py`, `app/application/dtos/request/payment_link.py`, `app/application/dtos/response/payment_link.py`, `app/application/use_cases/create_payment_link.py`, `tests/test_create_payment_link_use_case.py`; remove `CreatePaymentLinkGatewayResponse` and `create_payment_link` from `app/application/interfaces/gateway_provider.py` and `app/infra/interfaces/asaas_provider.py`
+- Delete: `app/web/routes/payment_links.py`, `app/web/schemas/payment_link.py`, `app/application/dtos/request/payment.py`, `app/application/dtos/request/payment_link.py`, `app/application/dtos/response/payment_link.py`, `app/application/use_cases/create_payment.py`, `app/application/use_cases/create_payment_link.py`, `tests/test_create_payment_use_case.py`, `tests/test_create_payment_link_use_case.py`; remove `CreatePaymentLinkGatewayResponse` and `create_payment_link` from `app/application/interfaces/gateway_provider.py` and `app/infra/interfaces/asaas_provider.py`
 
 **Interfaces:**
 - Produces ARQ job `workers:tasks.create_checkout_worker(dto_dict)`.
@@ -326,7 +325,7 @@ Expected: PASS.
 
 ```bash
 git add app/web/routes/payments.py app/workers/tasks.py app/workers/worker.py app/web/main.py tests/test_api_contracts.py tests/test_payment_workers.py
-git rm app/web/routes/payment_links.py app/web/schemas/payment_link.py app/application/dtos/request/payment.py app/application/dtos/request/payment_link.py app/application/dtos/response/payment_link.py app/application/use_cases/create_payment_link.py tests/test_create_payment_link_use_case.py
+git rm app/web/routes/payment_links.py app/web/schemas/payment_link.py app/application/dtos/request/payment.py app/application/dtos/request/payment_link.py app/application/dtos/response/payment_link.py app/application/use_cases/create_payment.py app/application/use_cases/create_payment_link.py tests/test_create_payment_use_case.py tests/test_create_payment_link_use_case.py
 git commit -m "feat: create checkouts from payments route"
 ```
 
