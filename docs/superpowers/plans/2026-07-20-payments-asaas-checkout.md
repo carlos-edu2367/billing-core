@@ -198,7 +198,7 @@ payload = {
 response = await self.asaas.post("/checkouts", payload)
 ```
 
-Require `id`, `link`, `status`, and the matching external reference before constructing the response. Delete `CreatePaymentLinkGatewayResponse` and `create_payment_link` from both the interface and `AsaasProvider`; do not alter subscription gateway methods.
+Require `id`, `link`, `status`, and the matching external reference before constructing the response. Keep `CreatePaymentLinkGatewayResponse` and `create_payment_link` temporarily so the still-active payment-link route, worker and tests remain importable through Task 3. Their complete removal is part of the atomic legacy-surface deletion in Task 4. Do not alter subscription gateway methods.
 
 - [ ] **Step 4: Run provider regression tests**
 
@@ -277,7 +277,7 @@ git commit -m "feat: persist idempotent payment checkouts"
 **Files:**
 - Modify: `app/web/routes/payments.py`, `app/workers/tasks.py`, `app/workers/worker.py`, `app/web/main.py`
 - Modify: `tests/test_api_contracts.py`, `tests/test_payment_workers.py`
-- Delete: `app/web/routes/payment_links.py`, `app/web/schemas/payment_link.py`, `app/application/dtos/request/payment.py`, `app/application/dtos/request/payment_link.py`, `app/application/dtos/response/payment_link.py`, `app/application/use_cases/create_payment_link.py`, `tests/test_create_payment_link_use_case.py`
+- Delete: `app/web/routes/payment_links.py`, `app/web/schemas/payment_link.py`, `app/application/dtos/request/payment.py`, `app/application/dtos/request/payment_link.py`, `app/application/dtos/response/payment_link.py`, `app/application/use_cases/create_payment_link.py`, `tests/test_create_payment_link_use_case.py`; remove `CreatePaymentLinkGatewayResponse` and `create_payment_link` from `app/application/interfaces/gateway_provider.py` and `app/infra/interfaces/asaas_provider.py`
 
 **Interfaces:**
 - Produces ARQ job `workers:tasks.create_checkout_worker(dto_dict)`.
@@ -314,7 +314,7 @@ job = await redis.enqueue_job("workers:tasks.create_checkout_worker", payload.to
 
 Set `job_name="create_checkout_worker"`, preserve `resource_type="payment"`, and do not schedule reconciliation. Add `create_checkout_worker(ctx, dto_dict)` using the current payment-link worker’s terminal-4xx/transient-5xx behavior; construct `CreateCheckoutDTO`, `PaymentRepositoryINFRA`, `GatewayOperationRepositoryINFRA`, `UowProvider`, `GetGatewayInfra`, and `CreateCheckout`, then call `execute(dto, GatewayProvider.ASAAS)` and return `_dump_result(result)`.
 
-Remove both legacy creation workers, their registrations, payment-link router import/tag/include, and all explicitly listed files.
+Remove both legacy creation workers, their registrations, payment-link router import/tag/include, the legacy payment-link gateway response/method, and all explicitly listed files.
 
 - [ ] **Step 4: Run route and worker regression tests**
 
