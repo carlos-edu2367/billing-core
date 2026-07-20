@@ -14,7 +14,7 @@ O par precisa existir em `INTERNAL_API_CLIENTS`.
 - `customers:create` (Criar/Consultar clientes no Asaas)
 - `subscriptions:create` (Criar assinaturas)
 - `subscriptions:cancel` (Cancelar assinaturas)
-- `payments:create` (Criar pagamentos avulsos e links de checkout)
+- `payments:create` (Criar checkouts avulsos)
 - `payments:read` (Consultar pagamentos locais)
 - `jobs:read` (Consultar estado de processamento assíncrono)
 - `metrics:read` (Acesso a métricas da aplicação)
@@ -43,7 +43,7 @@ Registra um novo cliente no provedor de pagamento (Asaas). Este endpoint é **id
 > Para assinaturas:
 > 1. Salve o `provider_customer_id` retornado no banco de dados local do seu SaaS, associado ao cadastro do usuário.
 > 2. Antes de criar uma assinatura, verifique se o usuário já possui este ID.
-> 3. Caso não possua, chame `POST /v1/customers` passando o CPF/CNPJ do usuário, salve o ID recebido localmente, e use-o na chamada de pagamento.
+> 3. Caso não possua, chame `POST /v1/customers` passando o CPF/CNPJ do usuário e salve o ID recebido localmente para a assinatura.
 > 4. Caso já possua, **reutilize o ID salvo** diretamente no payload de `POST /v1/subscriptions`.
 
 #### Auth
@@ -223,7 +223,7 @@ Cria um checkout Asaas assíncrono e idempotente. Não cria uma cobrança direta
 }
 ```
 
-`minutes_to_expire` aceita de 10 a 1440. A soma de `items` deve ser igual a `value`; o primeiro item é usado como referência externa do checkout. As três URLs de retorno devem usar host presente em `ALLOWED_CHECKOUT_REDIRECT_HOSTS`.
+`minutes_to_expire` aceita de 10 a 1440. A soma de `items` deve ser igual a `value`, e cada item possui sua própria `external_reference`. A referência externa do checkout é calculada como `checkout:{system}:{system_payment_id}`. As três URLs de retorno devem usar host presente em `ALLOWED_CHECKOUT_REDIRECT_HOSTS`.
 
 #### Resposta `202`
 
@@ -234,7 +234,7 @@ Cria um checkout Asaas assíncrono e idempotente. Não cria uma cobrança direta
 }
 ```
 
-Quando concluído, `GET /v1/jobs/{job_id}` inclui `checkout_id`, `checkout_url`, `payment_id` e `payment_status` no resultado.
+Quando concluído, `GET /v1/jobs/{job_id}` inclui `payment_id`, `checkout_url` e `payment_status` no resultado.
 
 #### Regras importantes
 
