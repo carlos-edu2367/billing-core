@@ -207,6 +207,42 @@ async def test_create_checkout_reuses_existing_local_payment_without_gateway_cal
 
 
 @pytest.mark.asyncio
+async def test_create_checkout_reissues_an_expired_checkout_for_the_same_payment():
+    existing = Payment.create_standalone_payment(
+        description="Pedido 123",
+        gateway=GatewayProvider.ASAAS,
+        system_payment_id="order-123",
+        provider_payment_id="checkout_expired",
+        value=Decimal("72.00"),
+        from_system=System.MARKETFY,
+        checkout_link="https://sandbox.asaas.com/checkoutSession/show/checkout_expired",
+        webhook_link="https://hooks.neectify.local/billing/payment",
+        due_date=None,
+        external_reference="checkout:marketfy:order-123",
+    )
+    existing.id = uuid4()
+    existing.payment_type = PaymentType.UNDEFINED
+    existing.payment_status = PaymentStatus.EXPIRED
+    gateway = FakeCheckoutGateway()
+    payment_repo = FakePaymentRepo(existing=existing)
+    service = CreateCheckout(
+        get_gateway=FakeGetGateway(gateway),
+        uow=FakeUow(),
+        payment_repo=payment_repo,
+        gateway_operation_repo=FakeGatewayOperationRepo(),
+    )
+
+    response = await service.execute(make_request(), GatewayProvider.ASAAS)
+
+    assert response.payment_id == existing.id
+    assert response.checkout_url == "https://sandbox.asaas.com/checkoutSession/show/checkout_123"
+    assert gateway.create_checkout_called == 1
+    assert existing.provider_payment_id == "checkout_123"
+    assert existing.checkout_link == response.checkout_url
+    assert existing.payment_status == PaymentStatus.PENDING
+
+
+@pytest.mark.asyncio
 async def test_create_checkout_retries_existing_failed_operation_without_gateway_reference():
     failed_operation = GatewayOperation(
         operation_name="create_checkout",

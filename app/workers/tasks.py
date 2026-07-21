@@ -804,7 +804,9 @@ async def reconcile_gateway_operations_worker(ctx):
 
                             checkout = await gateway.get_checkout(op.gateway_reference)
                             system = System(op.system) if isinstance(op.system, str) else op.system
-                            expected_external_reference = f"checkout:{system.value}:{op.request_payload['system_payment_id']}"
+                            expected_external_reference = op.request_payload.get("external_reference") or (
+                                f"checkout:{system.value}:{op.request_payload['system_payment_id']}"
+                            )
                             if checkout.external_reference != expected_external_reference:
                                 raise DomainError("Checkout remoto retornou externalReference divergente durante reconciliacao.")
 
@@ -839,8 +841,21 @@ async def reconcile_gateway_operations_worker(ctx):
                                 )
                                 payment.payment_type = PaymentType.UNDEFINED
                                 should_save_payment = True
-                            elif payment.payment_status != local_status:
-                                should_save_payment = True
+                            else:
+                                is_checkout_renewal = (
+                                    payment.external_reference != expected_external_reference
+                                    and payment.payment_status in {PaymentStatus.EXPIRED, PaymentStatus.CANCELED}
+                                )
+                                if is_checkout_renewal:
+                                    payment.renew_checkout(
+                                        provider_payment_id=checkout.checkout_id,
+                                        checkout_link=checkout.checkout_url,
+                                        external_reference=expected_external_reference,
+                                    )
+                                    should_save_payment = True
+
+                                if payment.payment_status != local_status:
+                                    should_save_payment = True
 
                             if should_save_payment:
                                 if checkout_status == "PAID":

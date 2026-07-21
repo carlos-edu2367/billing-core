@@ -201,3 +201,17 @@ class Payment:
         self.failed_date = datetime.now(timezone.utc)
         self.payment_status = PaymentStatus.FAILED
         self.updated_at = self.failed_date
+
+    def renew_checkout(self, *, provider_payment_id: str, checkout_link: str, external_reference: str) -> None:
+        if self.payment_status not in {PaymentStatus.EXPIRED, PaymentStatus.CANCELED}:
+            raise DomainError("Checkout so pode ser renovado para pagamento expirado ou cancelado.")
+
+        normalized_provider_payment_id = (provider_payment_id or "").strip()
+        if not normalized_provider_payment_id:
+            raise DomainError("Checkout renovado precisa ter identificador do gateway.")
+
+        self.provider_payment_id = normalized_provider_payment_id
+        self.checkout_link = checkout_link
+        self.external_reference = external_reference.strip()
+        self.payment_status = PaymentStatus.PENDING
+        self.updated_at = datetime.now(timezone.utc)
