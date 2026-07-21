@@ -1,4 +1,5 @@
 import logging
+from datetime import timezone
 
 import httpx
 
@@ -45,15 +46,28 @@ class CreateCheckout:
         gateway_provider: GatewayProvider,
     ) -> CreateCheckoutResponse:
         existing_payment = await self.payment_repo.get_by_system_ref(request.system_payment_id, request.system)
-        if existing_payment:
+        is_checkout_renewal = existing_payment is not None and existing_payment.payment_status in {
+            PaymentStatus.EXPIRED,
+            PaymentStatus.CANCELED,
+        }
+        if existing_payment and not is_checkout_renewal:
             return CreateCheckoutResponse(
                 payment_id=existing_payment.id,
                 checkout_url=existing_payment.checkout_link,
                 payment_status=existing_payment.payment_status,
             )
 
-        external_reference = f"checkout:{request.system.value}:{request.system_payment_id}"
-        operation_dedupe_key = f"create_checkout:{request.system.value}:{request.system_payment_id}"
+        if is_checkout_renewal:
+            renewal_marker = existing_payment.updated_at.astimezone(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+            external_reference = (
+                f"checkout:{request.system.value}:{request.system_payment_id}:renewal:{renewal_marker}"
+            )
+            operation_dedupe_key = (
+                f"create_checkout:{request.system.value}:{request.system_payment_id}:renewal:{renewal_marker}"
+            )
+        else:
+            external_reference = f"checkout:{request.system.value}:{request.system_payment_id}"
+            operation_dedupe_key = f"create_checkout:{request.system.value}:{request.system_payment_id}"
         existing_operation = await self.gateway_operation_repo.get_by_dedupe_key(operation_dedupe_key)
         operation = existing_operation
         if existing_operation:
@@ -105,20 +119,28 @@ class CreateCheckout:
                 ],
             )
             gateway_checkout_id = checkout_info.checkout_id
-            payment = Payment.create_standalone_payment(
-                description=request.description,
-                gateway=gateway_provider,
-                system_payment_id=request.system_payment_id,
-                provider_payment_id=checkout_info.checkout_id,
-                value=request.value,
-                from_system=request.system,
-                checkout_link=checkout_info.checkout_url,
-                webhook_link=request.webhook_link,
-                due_date=None,
-                external_reference=external_reference,
-            )
-            payment.payment_type = PaymentType.UNDEFINED
-            payment.payment_status = PaymentStatus.PENDING
+            if is_checkout_renewal:
+                payment = existing_payment
+                payment.renew_checkout(
+                    provider_payment_id=checkout_info.checkout_id,
+                    checkout_link=checkout_info.checkout_url,
+                    external_reference=external_reference,
+                )
+            else:
+                payment = Payment.create_standalone_payment(
+                    description=request.description,
+                    gateway=gateway_provider,
+                    system_payment_id=request.system_payment_id,
+                    provider_payment_id=checkout_info.checkout_id,
+                    value=request.value,
+                    from_system=request.system,
+                    checkout_link=checkout_info.checkout_url,
+                    webhook_link=request.webhook_link,
+                    due_date=None,
+                    external_reference=external_reference,
+                )
+                payment.payment_type = PaymentType.UNDEFINED
+                payment.payment_status = PaymentStatus.PENDING
             payment = await self.payment_repo.save(payment)
             operation.mark_completed(gateway_reference=gateway_checkout_id)
             await self.gateway_operation_repo.save(operation)

@@ -12,6 +12,7 @@ from app.domain.enums.gateway_operation_status import GatewayOperationStatus
 from app.domain.enums.payment_status import PaymentStatus
 from app.domain.errors import NotFoundError
 from app.domain.entities.gateway_operation import GatewayOperation
+from app.domain.entities.payment import Payment
 from app.application.interfaces.gateway_provider import CreateCheckoutGatewayResponse
 
 
@@ -396,6 +397,40 @@ async def test_reconcile_worker_recovers_active_checkout(monkeypatch, fake_redis
     assert payment_repo.saved[0].due_date is None
     assert operation.status == GatewayOperationStatus.COMPLETED
     assert delivery_repo.saved == []
+
+
+@pytest.mark.asyncio
+async def test_reconcile_worker_updates_expired_payment_when_renewal_checkout_is_found(monkeypatch, fake_redis):
+    operation = make_checkout_operation()
+    renewal_reference = "checkout:marketfy:order-123:renewal:20260721220000000000"
+    operation.request_payload["external_reference"] = renewal_reference
+    operation.dedupe_key = "create_checkout:marketfy:order-123:renewal:20260721220000000000"
+    gateway = CheckoutGateway(checkout_response("ACTIVE", renewal_reference))
+    operation_repo, payment_repo, _ = configure_checkout_reconciliation(monkeypatch, operation, gateway)
+    payment = Payment.create_standalone_payment(
+        description="Pedido 123",
+        gateway=GatewayProvider.ASAAS,
+        system_payment_id="order-123",
+        provider_payment_id="checkout_expired",
+        value=Decimal("72.00"),
+        from_system=System.MARKETFY,
+        checkout_link="https://sandbox.asaas.com/checkoutSession/show/checkout_expired",
+        webhook_link="https://hooks.neectify.local/billing/payment",
+        due_date=None,
+        external_reference="checkout:marketfy:order-123",
+    )
+    payment.id = uuid4()
+    payment.payment_status = PaymentStatus.EXPIRED
+    payment_repo.existing = payment
+    ctx = {"redis": fake_redis, "logger": SimpleNamespace(info=lambda *a, **k: None, error=lambda *a, **k: None)}
+
+    await tasks.reconcile_gateway_operations_worker(ctx)
+
+    assert payment_repo.saved == [payment]
+    assert payment.provider_payment_id == "checkout_123"
+    assert payment.checkout_link == "https://sandbox.asaas.com/checkoutSession/show/checkout_123"
+    assert payment.payment_status == PaymentStatus.PENDING
+    assert operation.status == GatewayOperationStatus.COMPLETED
 
 
 @pytest.mark.asyncio
