@@ -576,3 +576,103 @@ async def test_reconcile_worker_leaves_checkout_without_gateway_reference_for_ma
     assert operation_repo.saved == []
     assert payment_repo.saved == []
     assert delivery_repo.saved == []
+
+
+# ── Cancelamento reconciliado tambem precisa notificar o consumidor ──────────
+
+class CancelOperationRecord:
+    def __init__(self, operation: GatewayOperation):
+        self.id = operation.id
+        self.status = operation.status.value
+        self.operation = operation
+
+    def to_domain(self):
+        return self.operation
+
+
+class CancelSubRepo:
+    def __init__(self, subscription):
+        self.subscription = subscription
+        self.saved = []
+
+    async def get_by_id_for_update(self, subscription_id):
+        return self.subscription
+
+    async def get_by_id(self, subscription_id):
+        return self.subscription
+
+    async def save(self, sub):
+        self.saved.append(sub)
+        return sub
+
+
+def make_cancel_operation(subscription_id) -> GatewayOperation:
+    operation = GatewayOperation(
+        operation_name="cancel_subscription",
+        dedupe_key=f"cancel_subscription:neectify_food:{subscription_id}",
+        provider=GatewayProvider.ASAAS,
+        system=System.NEECTIFY_FOOD,
+        request_payload={"subscription_id": str(subscription_id), "system": "neectify_food"},
+        gateway_reference="gw-sub-123",
+        status=GatewayOperationStatus.REQUIRES_RECONCILIATION,
+    )
+    operation.id = uuid4()
+    return operation
+
+
+@pytest.mark.asyncio
+async def test_reconciled_cancellation_notifies_the_consumer_system(monkeypatch, fake_redis):
+    from app.application.dtos.response.webhook import InternalEventType
+    from app.domain.entities.subscription import Subscription
+    from app.domain.enums.subscription_type import SubscriptionType
+
+    subscription = Subscription(
+        initial_date=datetime.now(timezone.utc),
+        description="Plano Pro",
+        system_subscription_id="store-1:pro:abc",
+        gateway_subscription_id="gw-sub-123",
+        gateway_provider=GatewayProvider.ASAAS,
+        status=SubscriptionStatus.CANCELLATION_PENDING,
+        last_paid_date=None,
+        from_system=System.NEECTIFY_FOOD,
+        subscription_type=SubscriptionType.MONTHLY,
+        expires_at=datetime.now(timezone.utc),
+        id=uuid4(),
+        value=Decimal("99.90"),
+        webhook_link="https://hooks.neectify.local/billing/subscription",
+    )
+    operation = make_cancel_operation(subscription.id)
+    record = CancelOperationRecord(operation)
+    delivery_repo = CheckoutDeliveryRepo()
+    sub_repo = CancelSubRepo(subscription)
+
+    gateway = FakeGateway(verify_resp=SimpleNamespace(
+        subscription_id="gw-sub-123", status="INACTIVE", deleted=True,
+        next_due_date=date.today(), value=Decimal("99.90"), cycle="MONTHLY"))
+
+    monkeypatch.setattr(tasks, "AsyncSessionLocal", lambda: DummySession(op_record=record))
+    monkeypatch.setattr(tasks, "GatewayOperationRepositoryINFRA", lambda s: FakeOpRepo([operation]))
+    monkeypatch.setattr(tasks, "SubscriptionRepositoryINFRA", lambda s: sub_repo)
+    monkeypatch.setattr(tasks, "PaymentRepositoryINFRA", lambda s: FakePaymentRepo())
+    monkeypatch.setattr(tasks, "InternalWebhookDeliveryRepositoryINFRA", lambda s: delivery_repo)
+    monkeypatch.setattr(tasks, "UowProvider", lambda s: SimpleNamespace(
+        commit=_reconcile_noop, rollback=_reconcile_noop))
+    monkeypatch.setattr(tasks, "GetGatewayInfra", lambda: FakeGetGateway(gateway))
+
+    ctx = {"redis": fake_redis, "logger": SimpleNamespace(
+        info=lambda *a, **k: None, warning=lambda *a, **k: None, error=lambda *a, **k: None)}
+    await tasks.reconcile_gateway_operations_worker(ctx)
+
+    assert subscription.status == SubscriptionStatus.CANCELED
+    assert delivery_repo.saved, "cancelamento reconciliado nao gerou entrega interna"
+    delivery = delivery_repo.saved[-1]
+    assert delivery.event_type == InternalEventType.SUBSCRIPTION_INACTIVATED.value
+    assert delivery.target_url == "https://hooks.neectify.local/billing/subscription"
+    assert any(
+        args[0] == "workers:tasks.send_internal_webhook"
+        for args, _ in fake_redis.enqueued_jobs
+    ), "entrega nao foi enfileirada"
+
+
+async def _reconcile_noop(*args, **kwargs):
+    return None

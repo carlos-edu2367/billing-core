@@ -743,3 +743,141 @@ async def test_process_webhook_payment_deleted_after_confirmed_for_subscription(
 
     assert response is None
     assert payment.payment_status == PaymentStatus.CANCELED
+
+
+# ── Ciclo de vida da assinatura: inadimplência, estorno e chargeback ──────────
+
+def make_subscription_payment(provider_payment_id="pay-1"):
+    payment = Payment.create_subscription_payment(
+        description="Pagamento relacionado a assinatura: Plano Pro",
+        gateway=GatewayProvider.ASAAS,
+        system_payment_id="sub-1:pay-1",
+        provider_payment_id=provider_payment_id,
+        value=Decimal("99.90"),
+        from_system=System.NEECTIFY_SHOP,
+        subscription_id=uuid4(),
+        payment_type=PaymentType.CREDIT_CARD,
+    )
+    payment.id = uuid4()
+    return payment
+
+
+def make_lifecycle_payload(event, status):
+    return WebhookPayload(
+        event=event,
+        source_event_id=f"evt-{event.value}",
+        details=Details(
+            id="pay-1",
+            subscription="gw-sub-1",
+            status=status,
+            value=Decimal("99.90"),
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_reports_subscription_payment_overdue():
+    from app.application.dtos.response.webhook import InternalEventType
+
+    payment = make_subscription_payment()
+    subscription = make_subscription()
+    payment_repo = FakePaymentRepo(existing=payment)
+    service = ProcessWebhookService(
+        payment_repo, FakeSubscriptionRepo(subscription), FakeUow(), FakeWebhookEventRepo()
+    )
+
+    response = await service.execute(
+        GatewayProvider.ASAAS,
+        make_lifecycle_payload(EventType.PAYMENT_OVERDUE, "OVERDUE"),
+    )
+
+    assert response is not None
+    assert response.event == InternalEventType.PAYMENT_OVERDUE
+    assert response.subscription_id == subscription.id
+    assert payment.payment_status == PaymentStatus.OVERDUE
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_reports_subscription_payment_refunded():
+    from app.application.dtos.response.webhook import InternalEventType
+
+    payment = make_subscription_payment()
+    payment.mark_as_paid(datetime.now(timezone.utc))
+    subscription = make_subscription()
+    service = ProcessWebhookService(
+        FakePaymentRepo(existing=payment),
+        FakeSubscriptionRepo(subscription),
+        FakeUow(),
+        FakeWebhookEventRepo(),
+    )
+
+    response = await service.execute(
+        GatewayProvider.ASAAS,
+        make_lifecycle_payload(EventType.PAYMENT_REFUNDED, "REFUNDED"),
+    )
+
+    assert response is not None
+    assert response.event == InternalEventType.PAYMENT_REFUNDED
+    assert response.subscription_id == subscription.id
+    assert payment.payment_status == PaymentStatus.REFUNDED
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_reports_subscription_payment_chargeback():
+    from app.application.dtos.response.webhook import InternalEventType
+
+    payment = make_subscription_payment()
+    payment.mark_as_paid(datetime.now(timezone.utc))
+    subscription = make_subscription()
+    service = ProcessWebhookService(
+        FakePaymentRepo(existing=payment),
+        FakeSubscriptionRepo(subscription),
+        FakeUow(),
+        FakeWebhookEventRepo(),
+    )
+
+    response = await service.execute(
+        GatewayProvider.ASAAS,
+        make_lifecycle_payload(EventType.PAYMENT_CHARGEBACK_REQUESTED, "CHARGEBACK_REQUESTED"),
+    )
+
+    assert response is not None
+    assert response.event == InternalEventType.PAYMENT_CHARGEBACK_REQUESTED
+    assert response.subscription_id == subscription.id
+    assert payment.payment_status == PaymentStatus.REFUNDED
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_ignores_stale_overdue_after_payment():
+    """Guarda de regressao: OVERDUE atrasado nao pode derrubar o job nem
+    marcar como inadimplente quem ja pagou."""
+    payment = make_subscription_payment()
+    payment.mark_as_paid(datetime.now(timezone.utc))
+    subscription = make_subscription()
+    service = ProcessWebhookService(
+        FakePaymentRepo(existing=payment),
+        FakeSubscriptionRepo(subscription),
+        FakeUow(),
+        FakeWebhookEventRepo(),
+    )
+
+    response = await service.execute(
+        GatewayProvider.ASAAS,
+        make_lifecycle_payload(EventType.PAYMENT_OVERDUE, "OVERDUE"),
+    )
+
+    assert payment.payment_status == PaymentStatus.PAID
+    assert response is None
+
+
+@pytest.mark.asyncio
+async def test_process_webhook_still_discards_unknown_events():
+    service = ProcessWebhookService(
+        FakePaymentRepo(), FakeSubscriptionRepo(make_subscription()), FakeUow(), FakeWebhookEventRepo()
+    )
+    payload = WebhookPayload(
+        event="SOMETHING_NEW",
+        source_event_id="evt-x",
+        details=Details(id=None, subscription="gw-sub-1"),
+    )
+    assert await service.execute(GatewayProvider.ASAAS, payload) is None

@@ -17,6 +17,23 @@ from app.domain.enums.payment_type import PaymentType
 
 logger = logging.getLogger(__name__)
 
+# Eventos de ciclo de vida que precisam ser espelhados para o sistema de origem:
+# sem eles a assinatura fica ACTIVE para sempre mesmo sem pagamento.
+SUBSCRIPTION_LIFECYCLE_EVENTS = {
+    EventType.PAYMENT_OVERDUE: InternalEventType.PAYMENT_OVERDUE,
+    EventType.PAYMENT_REFUNDED: InternalEventType.PAYMENT_REFUNDED,
+    EventType.PAYMENT_CHARGEBACK_REQUESTED: InternalEventType.PAYMENT_CHARGEBACK_REQUESTED,
+}
+
+# Estados a partir dos quais Payment.mark_as_overdue() recusa a transicao. Um
+# OVERDUE que chega fora de ordem depois da confirmacao e obsoleto, nao um erro.
+_OVERDUE_REJECTED_FROM = {
+    PaymentStatus.PAID,
+    PaymentStatus.CANCELED,
+    PaymentStatus.REFUNDED,
+    PaymentStatus.FAILED,
+}
+
 
 class ProcessWebhookService():
     def __init__(self, payment_repo: PaymentRepository, sub_repo: SubscriptionRepository, uow: UowProvider, webhook_event_repo: WebhookEventRepository):
@@ -87,6 +104,9 @@ class ProcessWebhookService():
                 payment_id=payment.id,
                 subscription_id=None,
             )
+
+        if payload.event in SUBSCRIPTION_LIFECYCLE_EVENTS and payload.details.subscription:
+            return await self._process_subscription_lifecycle_webhook(event_id, event, payload)
 
         if payload.event in (
             EventType.UNKNOWN,
@@ -257,6 +277,65 @@ class ProcessWebhookService():
             )
 
         return None
+
+    async def _process_subscription_lifecycle_webhook(
+        self,
+        event_id: str,
+        event: WebhookEvent,
+        payload: WebhookPayload,
+    ) -> ProcessWebhookResponse | None:
+        """Inadimplencia, estorno e chargeback de pagamento de assinatura.
+
+        O estado local do pagamento e atualizado e o evento e espelhado para o
+        sistema de origem, que e quem decide bloquear o acesso.
+        """
+        sub = await self.sub_repo.get_by_provider_id_for_update(payload.details.subscription)
+        payment = (
+            await self.payment_repo.get_by_provider_id(payload.details.id)
+            if payload.details.id
+            else None
+        )
+
+        if payment is None:
+            logger.warning(
+                "Pagamento de assinatura nao encontrado para evento de ciclo de vida",
+                extra={"event_id": event_id, "payment_id": payload.details.id},
+            )
+            await self._mark_event_processed(event)
+            return None
+
+        status = payload.details.status or payload.event.value.removeprefix("PAYMENT_")
+        if status.upper() == "OVERDUE" and payment.payment_status in _OVERDUE_REJECTED_FROM:
+            logger.info(
+                "Evento de vencimento obsoleto ignorado",
+                extra={
+                    "event_id": event_id,
+                    "payment_id": payload.details.id,
+                    "current_status": payment.payment_status.value,
+                },
+            )
+            await self._mark_event_processed(event)
+            return None
+
+        changed = apply_gateway_payment_status(
+            payment,
+            status,
+            payload.details.payment_date.date() if payload.details.payment_date else None,
+            payload.details.net_value,
+        )
+        if changed:
+            payment = await self.payment_repo.save(payment)
+
+        await self._mark_event_processed(event)
+
+        if not changed:
+            return None
+
+        return ProcessWebhookResponse(
+            event=SUBSCRIPTION_LIFECYCLE_EVENTS[payload.event],
+            payment_id=payment.id,
+            subscription_id=sub.id,
+        )
 
     async def _process_checkout_webhook(
         self,

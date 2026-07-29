@@ -5,7 +5,7 @@ from app.application.dtos.request.checkout import CreateCheckoutDTO
 from app.application.dtos.request.subscription import CreateSubscriptionDTO
 from app.application.dtos.request.subscription_cancel import CancelSubscriptionDTO
 from app.application.dtos.request.webhook import WebhookPayload
-from app.application.dtos.response.webhook import InternalEventType, SendInternalWebhookPayment, SendInternalWebhookSubscription
+from app.application.dtos.response.webhook import InternalEventType, ProcessWebhookResponse, SendInternalWebhookPayment, SendInternalWebhookSubscription
 from app.application.use_cases.cancel_subscription import CancelSubscription
 from app.application.use_cases.create_checkout import CreateCheckout
 from app.infra.interfaces.asaas_provider import AsaasAPIError
@@ -108,6 +108,27 @@ async def _build_payment_internal_delivery(payment) -> InternalWebhookDelivery |
         subscription_id=None,
         payment_id=payment.id,
     )
+
+
+async def _persist_internal_delivery(
+    result,
+    *,
+    sub_repo: SubscriptionRepositoryINFRA,
+    payment_repo: PaymentRepositoryINFRA,
+    delivery_repo: InternalWebhookDeliveryRepositoryINFRA,
+    uow: UowProvider,
+) -> UUID | None:
+    """Grava a entrega interna se ela ainda nao existir. Devolve o id a enfileirar."""
+    delivery = await _build_internal_delivery(result, sub_repo, payment_repo)
+    if delivery is None:
+        return None
+
+    if await delivery_repo.get_by_dedupe_key(delivery.dedupe_key) is not None:
+        return None
+
+    delivery = await delivery_repo.save(delivery)
+    await uow.commit()
+    return delivery.id
 
 
 async def process_webhook(ctx, payload_dict: dict, gateway_provider_str: str):
@@ -475,9 +496,12 @@ async def cancel_subscription_worker(ctx, dto_dict: dict):
             extra={"job_id": job_id, "job_try": job_try, "subscription_id": str(dto.subscription_id), "system": dto.system.value},
         )
 
+        internal_delivery_id: UUID | None = None
         async with AsyncSessionLocal() as session:
             sub_repo = SubscriptionRepositoryINFRA(session)
+            payment_repo = PaymentRepositoryINFRA(session)
             gateway_operation_repo = GatewayOperationRepositoryINFRA(session)
+            delivery_repo = InternalWebhookDeliveryRepositoryINFRA(session)
             uow = UowProvider(session)
             get_gateway = GetGatewayInfra()
 
@@ -488,6 +512,29 @@ async def cancel_subscription_worker(ctx, dto_dict: dict):
                 gateway_operation_repo=gateway_operation_repo,
             )
             result = await service.execute(dto)
+
+            # O consumidor so descobre o fim da assinatura por esta entrega. Sem
+            # ela, o cancelamento depende do Asaas devolver SUBSCRIPTION_DELETED.
+            # O dedupe_key e o mesmo que aquele round-trip produziria, entao um
+            # eventual evento do gateway nao gera entrega duplicada.
+            if result is not None and result.subscription_status == SubscriptionStatus.CANCELED:
+                internal_delivery_id = await _persist_internal_delivery(
+                    ProcessWebhookResponse(
+                        event=InternalEventType.SUBSCRIPTION_INACTIVATED,
+                        payment_id=None,
+                        subscription_id=result.subscription_id,
+                    ),
+                    sub_repo=sub_repo,
+                    payment_repo=payment_repo,
+                    delivery_repo=delivery_repo,
+                    uow=uow,
+                )
+
+        if internal_delivery_id is not None:
+            await ctx["redis"].enqueue_job(
+                "workers:tasks.send_internal_webhook",
+                str(internal_delivery_id),
+            )
 
         await update_job_metadata(
             ctx["redis"],
@@ -800,6 +847,19 @@ async def reconcile_gateway_operations_worker(ctx):
                                     await sub_repo.save(sub)
                                 op.mark_completed(gateway_reference=op.gateway_reference)
                                 await op_repo.save(op)
+                                # Mesma notificacao que o worker de cancelamento emite:
+                                # o consumidor precisa saber que a assinatura acabou.
+                                internal_delivery_id = await _persist_internal_delivery(
+                                    ProcessWebhookResponse(
+                                        event=InternalEventType.SUBSCRIPTION_INACTIVATED,
+                                        payment_id=None,
+                                        subscription_id=sub.id,
+                                    ),
+                                    sub_repo=sub_repo,
+                                    payment_repo=payment_repo,
+                                    delivery_repo=delivery_repo,
+                                    uow=uow,
+                                )
                                 ctx["logger"].info(f"Reconciled cancel_subscription for {op.gateway_reference}")
                         elif op.operation_name == "create_checkout":
                             if not op.gateway_reference:
