@@ -66,7 +66,14 @@ class CreateSubscription:
                 raise DomainError("Existe uma operacao concluida sem espelho local consistente. Requer reconciliacao antes de nova tentativa.")
             if existing_operation.status == GatewayOperationStatus.REQUIRES_RECONCILIATION:
                 raise DomainError("Existe uma operacao pendente de reconciliacao para essa assinatura.")
-            raise DomainError("Ja existe uma operacao de criacao de assinatura em andamento ou falha recente para essa referencia.")
+            if existing_operation.status != GatewayOperationStatus.FAILED:
+                raise DomainError("Ja existe uma operacao de criacao de assinatura em andamento para essa referencia.")
+            if existing_operation.gateway_reference:
+                raise DomainError("Operacao anterior falhou com referencia remota registrada. Requer reconciliacao antes de nova tentativa.")
+
+            # Falha sem referencia remota significa que nada foi criado no gateway:
+            # a retentativa e segura e reaproveita a mesma operacao, com payload atualizado.
+            existing_operation.request_payload = request.model_dump(mode="json")
 
         operation = existing_operation or GatewayOperation(
             operation_name="create_subscription",

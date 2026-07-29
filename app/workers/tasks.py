@@ -715,7 +715,17 @@ async def reconcile_gateway_operations_worker(ctx):
                     async with session.begin():
                         # SELECT FOR UPDATE on GatewayOperation to lock row
                         record = await session.get(GatewayOperationModel, op_id, with_for_update=True)
-                        if not record or record.status != GatewayOperationStatus.REQUIRES_RECONCILIATION.value:
+                        if not record:
+                            continue
+
+                        # EnumValueType devolve o membro do enum; normalizamos para tolerar
+                        # tambem a string crua caso o valor venha de outra origem.
+                        record_status = (
+                            record.status
+                            if isinstance(record.status, GatewayOperationStatus)
+                            else GatewayOperationStatus(record.status)
+                        )
+                        if record_status != GatewayOperationStatus.REQUIRES_RECONCILIATION:
                             continue
 
                         op = record.to_domain()

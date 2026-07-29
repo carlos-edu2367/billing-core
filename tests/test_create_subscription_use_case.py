@@ -214,6 +214,78 @@ async def test_create_subscription_persists_subscription_and_payment():
     assert gateway_operation_repo.saved[-1].status == GatewayOperationStatus.COMPLETED
 
 
+def make_failed_operation(gateway_reference: str | None = None) -> GatewayOperation:
+    operation = GatewayOperation(
+        operation_name="create_subscription",
+        dedupe_key="create_subscription:neectify_shop:sub-1",
+        provider=GatewayProvider.ASAAS,
+        system=System.NEECTIFY_SHOP,
+        request_payload={"system_sub_id": "sub-1", "value": "99.90"},
+        status=GatewayOperationStatus.FAILED,
+        gateway_reference=gateway_reference,
+        error_message="falha transitoria",
+    )
+    operation.id = uuid4()
+    return operation
+
+
+@pytest.mark.asyncio
+async def test_create_subscription_retries_failed_operation_without_gateway_reference():
+    failed_operation = make_failed_operation()
+    gateway = FakeGateway()
+    gateway_operation_repo = FakeGatewayOperationRepo(existing=failed_operation)
+    service = CreateSubscription(
+        get_gateway=FakeGetGateway(gateway),
+        uow=FakeUow(),
+        repo=FakeSubscriptionRepo(),
+        payment_repo=FakePaymentRepo(),
+        gateway_operation_repo=gateway_operation_repo,
+    )
+
+    response = await service.execute(make_request(), make_customer())
+
+    assert response.checkout_url == "https://checkout.local/pay-1"
+    assert gateway.create_subscription_called == 1
+    assert gateway_operation_repo.saved[-1].id == failed_operation.id
+    assert gateway_operation_repo.saved[-1].status == GatewayOperationStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_create_subscription_retry_refreshes_stale_request_payload():
+    failed_operation = make_failed_operation()
+    gateway_operation_repo = FakeGatewayOperationRepo(existing=failed_operation)
+    service = CreateSubscription(
+        get_gateway=FakeGetGateway(FakeGateway()),
+        uow=FakeUow(),
+        repo=FakeSubscriptionRepo(),
+        payment_repo=FakePaymentRepo(),
+        gateway_operation_repo=gateway_operation_repo,
+    )
+
+    await service.execute(make_request(), make_customer())
+
+    assert gateway_operation_repo.saved[-1].request_payload["value"] == "129.90"
+
+
+@pytest.mark.asyncio
+async def test_create_subscription_blocks_failed_operation_with_gateway_reference():
+    failed_operation = make_failed_operation(gateway_reference="gw-sub-orphan")
+    gateway = FakeGateway()
+    service = CreateSubscription(
+        get_gateway=FakeGetGateway(gateway),
+        uow=FakeUow(),
+        repo=FakeSubscriptionRepo(),
+        payment_repo=FakePaymentRepo(),
+        gateway_operation_repo=FakeGatewayOperationRepo(existing=failed_operation),
+    )
+
+    with pytest.raises(DomainError) as exc_info:
+        await service.execute(make_request(), make_customer())
+
+    assert "reconciliacao" in str(exc_info.value).lower()
+    assert gateway.create_subscription_called == 0
+
+
 @pytest.mark.asyncio
 async def test_create_subscription_marks_operation_for_reconciliation_when_local_sync_fails():
     gateway = FakeGateway(fail_after_create=True)

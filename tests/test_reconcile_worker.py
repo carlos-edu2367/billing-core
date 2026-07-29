@@ -242,6 +242,73 @@ async def test_reconcile_worker_skips_when_lock_held(monkeypatch, fake_redis):
 
 
 @pytest.mark.asyncio
+async def test_reconcile_worker_processes_record_with_enum_status(monkeypatch, fake_redis):
+    """EnumValueType.process_result_value devolve o membro do enum, nao a string crua.
+
+    O guard do worker precisa reconhecer esse formato, senao nenhuma operacao e reconciliada.
+    """
+    op_payload = {
+        "system_sub_id": "sys-sub-789",
+        "description": "Plano Premium",
+        "subscription_type": "MONTHLY",
+        "expires_at": datetime.now(timezone.utc).isoformat(),
+        "next_due_date": datetime.now(timezone.utc).isoformat(),
+        "value": 149.90,
+        "webhook_link": "https://hook.neectify.local",
+    }
+
+    op_id = uuid4()
+    op_model = SimpleNamespace(
+        id=op_id,
+        operation_name="create_subscription",
+        dedupe_key="create_subscription:marketfy:sys-sub-789",
+        provider="asaas",
+        system="marketfy",
+        request_payload=op_payload,
+        status=GatewayOperationStatus.REQUIRES_RECONCILIATION,
+        gateway_reference="gw-sub-789",
+        error_message="sync error",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+        to_domain=lambda: SimpleNamespace(
+            id=op_id,
+            operation_name="create_subscription",
+            dedupe_key="create_subscription:marketfy:sys-sub-789",
+            provider=GatewayProvider.ASAAS,
+            system=System.MARKETFY,
+            request_payload=op_payload,
+            status=GatewayOperationStatus.REQUIRES_RECONCILIATION,
+            gateway_reference="gw-sub-789",
+            created_at=datetime.now(timezone.utc),
+            mark_completed=lambda gateway_reference: None,
+        ),
+    )
+
+    dummy_session = DummySession(op_model)
+    monkeypatch.setattr(tasks, "AsyncSessionLocal", lambda: dummy_session)
+    monkeypatch.setattr(tasks, "GatewayOperationRepositoryINFRA", lambda s: FakeOpRepo([op_model.to_domain()]))
+    monkeypatch.setattr(tasks, "GetGatewayInfra", lambda: FakeGetGateway(FakeGateway()))
+
+    sub_repo = FakeSubRepo()
+    monkeypatch.setattr(tasks, "SubscriptionRepositoryINFRA", lambda s: sub_repo)
+    monkeypatch.setattr(tasks, "PaymentRepositoryINFRA", lambda s: FakePaymentRepo())
+    monkeypatch.setattr(tasks, "UowProvider", lambda s: SimpleNamespace())
+
+    ctx = {
+        "redis": fake_redis,
+        "logger": SimpleNamespace(
+            info=lambda msg, *a, **k: None,
+            error=lambda msg, *a, **k: None,
+        ),
+    }
+
+    await tasks.reconcile_gateway_operations_worker(ctx)
+
+    assert len(sub_repo.saved) == 1
+    assert sub_repo.saved[0].gateway_subscription_id == "gw-sub-789"
+
+
+@pytest.mark.asyncio
 async def test_reconcile_worker_converts_jsonb_value_to_decimal(monkeypatch, fake_redis):
     op_payload = {
         "system_sub_id": "sys-sub-456",
