@@ -3,6 +3,9 @@ os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://billing:billing@loca
 os.environ.setdefault("ASAAS_API_TOKEN", "fake-asaas-api-token")
 os.environ["ASAAS_WEBHOOK_SECRET"] = "fake-asaas-webhook-secret-long-enough-32-chars"
 os.environ["INTERNAL_WEBHOOK_SIGNATURE"] = "test-webhook-signature-for-dev-only-32-chars"
+os.environ.setdefault("MERCADOPAGO_ACCESS_TOKEN", "TEST-fake-mercadopago-token")
+os.environ.setdefault("MERCADOPAGO_WEBHOOK_SECRET", "fake-mercadopago-webhook-secret-with-32-chars")
+os.environ.setdefault("MERCADOPAGO_SUBSCRIPTION_BACK_URL", "https://app.neectify.local/billing/subscription")
 
 from collections import defaultdict
 

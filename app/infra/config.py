@@ -3,6 +3,8 @@ from functools import cached_property
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.domain.enums.gateway_provider import GatewayProvider
+
 
 DEFAULT_CHECKOUT_REDIRECT_HOSTS: tuple[str, ...] = ("neectify.com",)
 
@@ -33,6 +35,12 @@ class Settings(BaseSettings):
     ASAAS_WEBHOOK_SECRET: str
     ASAAS_BASE_URL: str | None = None
     ASAAS_SANDBOX: bool = True
+    DEFAULT_GATEWAY_PROVIDER: GatewayProvider = GatewayProvider.MERCADOPAGO
+    MERCADOPAGO_ACCESS_TOKEN: str | None = None
+    MERCADOPAGO_WEBHOOK_SECRET: str | None = None
+    MERCADOPAGO_BASE_URL: str = "https://api.mercadopago.com"
+    MERCADOPAGO_SUBSCRIPTION_BACK_URL: str | None = None
+    MERCADOPAGO_CHECKOUT_EXPIRY_GRACE_SECONDS: int = 300
     INTERNAL_API_CLIENTS: dict[str, InternalApiClientConfig] = Field(default_factory=dict)
     CORS_ALLOW_ORIGINS: list[str] = Field(default_factory=list)
     ALLOWED_INTERNAL_WEBHOOK_HOSTS: list[str] = Field(default_factory=list)
@@ -111,6 +119,23 @@ class Settings(BaseSettings):
         for system_name, client in self.INTERNAL_API_CLIENTS.items():
             if not client.api_key.strip():
                 raise RuntimeError(f"Configuracao invalida: INTERNAL_API_CLIENTS[{system_name}] sem api_key.")
+
+        if self.DEFAULT_GATEWAY_PROVIDER == GatewayProvider.MERCADOPAGO:
+            for required_name in (
+                "MERCADOPAGO_ACCESS_TOKEN",
+                "MERCADOPAGO_WEBHOOK_SECRET",
+                "MERCADOPAGO_SUBSCRIPTION_BACK_URL",
+            ):
+                if not (getattr(self, required_name) or "").strip():
+                    raise RuntimeError(
+                        f"Configuracao invalida: {required_name} e obrigatorio quando o gateway padrao e mercadopago."
+                    )
+
+        if self.MERCADOPAGO_WEBHOOK_SECRET and any(ch.isspace() for ch in self.MERCADOPAGO_WEBHOOK_SECRET):
+            raise RuntimeError("Configuracao invalida: MERCADOPAGO_WEBHOOK_SECRET nao pode conter espacos.")
+
+        if self.is_production and (self.MERCADOPAGO_ACCESS_TOKEN or "").startswith("TEST-"):
+            raise RuntimeError("Configuracao invalida: producao nao pode usar access token TEST- do Mercado Pago.")
 
 
 settings = Settings()

@@ -344,6 +344,7 @@ def test_payment_checkout_does_not_require_redirect_hosts_in_production(monkeypa
     monkeypatch.setattr(settings, "APP_ENV", "production")
     monkeypatch.setattr(settings, "ASAAS_BASE_URL", "https://api.asaas.com/v3")
     monkeypatch.setattr(settings, "ALLOWED_CHECKOUT_REDIRECT_HOSTS", [], raising=False)
+    monkeypatch.setattr(settings, "MERCADOPAGO_ACCESS_TOKEN", "APP_USR-test")
     monkeypatch.delitem(settings.__dict__, "resolved_asaas_base_url", raising=False)
 
     settings.validate_runtime()
