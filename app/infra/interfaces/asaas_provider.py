@@ -7,6 +7,7 @@ import httpx
 from app.application.dtos.request.webhook import WebhookPayload
 from app.application.interfaces.gateway_provider import (
     CreateCheckoutGatewayResponse,
+    GatewayAPIError,
     GetCustomerResponse,
     InterfaceGateway,
     PaymentStatusGatewayResponse,
@@ -21,15 +22,10 @@ from app.infra.config import settings
 logger = logging.getLogger(__name__)
 
 
-class AsaasAPIError(Exception):
+class AsaasAPIError(GatewayAPIError):
     """Erro retornado pelo Asaas com status HTTP e corpo da resposta."""
 
-    def __init__(self, status_code: int, body: str, method: str, endpoint: str) -> None:
-        super().__init__(f"Asaas {method} {endpoint} → {status_code}: {body}")
-        self.status_code = status_code
-        self.body = body
-        self.method = method
-        self.endpoint = endpoint
+    provider_label = "Asaas"
 
 
 class AsaasAPI:

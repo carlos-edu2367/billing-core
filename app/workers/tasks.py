@@ -6,9 +6,9 @@ from app.application.dtos.request.subscription import CreateSubscriptionDTO
 from app.application.dtos.request.subscription_cancel import CancelSubscriptionDTO
 from app.application.dtos.request.webhook import WebhookPayload
 from app.application.dtos.response.webhook import InternalEventType, ProcessWebhookResponse, SendInternalWebhookPayment, SendInternalWebhookSubscription
+from app.application.interfaces.gateway_provider import GatewayAPIError
 from app.application.use_cases.cancel_subscription import CancelSubscription
 from app.application.use_cases.create_checkout import CreateCheckout
-from app.infra.interfaces.asaas_provider import AsaasAPIError
 from app.application.use_cases.create_subscription import CreateSubscription
 from app.domain.entities.internal_webhook_delivery import InternalWebhookDelivery
 from app.domain.entities.payment import Payment
@@ -129,6 +129,49 @@ async def _persist_internal_delivery(
     delivery = await delivery_repo.save(delivery)
     await uow.commit()
     return delivery.id
+
+
+async def _handle_gateway_api_error(
+    ctx,
+    exc: GatewayAPIError,
+    *,
+    job_name: str,
+    job_id: str,
+    job_try: int,
+    label: str,
+) -> dict:
+    """Falha 4xx do gateway e terminal (dead letter, sem retry); 5xx volta para o ARQ."""
+    error_code = f"{exc.__class__.__name__}_{exc.status_code}"
+    log_extra = {"job_id": job_id, "job_try": job_try, "gateway_status": exc.status_code, "gateway_body": exc.body}
+
+    if exc.is_client_error:
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="failed",
+            attempt=job_try,
+            finished_at=datetime.now(timezone.utc),
+            error_code=error_code,
+            error_message=exc.body[:500],
+        )
+        await register_dead_letter(ctx["redis"], job_name, job_id)
+        ctx["logger"].error(f"{label} failed terminally - gateway returned client error", extra=log_extra)
+        return {"status": "failed", "error": str(exc)}
+
+    is_final_try = job_try >= settings.WORKER_MAX_TRIES
+    await update_job_metadata(
+        ctx["redis"],
+        job_id,
+        status="failed" if is_final_try else "retrying",
+        attempt=job_try,
+        finished_at=datetime.now(timezone.utc) if is_final_try else None,
+        error_code=error_code,
+        error_message=exc.body[:500],
+    )
+    if is_final_try:
+        await register_dead_letter(ctx["redis"], job_name, job_id)
+    ctx["logger"].warning(f"{label} transient failure - gateway returned server error, retry scheduled", extra=log_extra)
+    raise exc
 
 
 async def process_webhook(ctx, payload_dict: dict, gateway_provider_str: str):
@@ -312,42 +355,10 @@ async def create_subscription_worker(ctx, dto_dict: dict, customer_provider_id: 
         await register_dead_letter(ctx["redis"], "create_subscription_worker", job_id)
         ctx["logger"].warning("Subscription rejected", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
         return {"status": "failed", "error": str(exc)}
-    except AsaasAPIError as exc:
-        is_client_error = 400 <= exc.status_code < 500
-        if is_client_error:
-            await update_job_metadata(
-                ctx["redis"],
-                job_id,
-                status="failed",
-                attempt=job_try,
-                finished_at=datetime.now(timezone.utc),
-                error_code=f"AsaasAPIError_{exc.status_code}",
-                error_message=exc.body[:500],
-            )
-            await register_dead_letter(ctx["redis"], "create_subscription_worker", job_id)
-            ctx["logger"].error(
-                "Subscription creation failed terminally — Asaas returned client error",
-                extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
-            )
-            return {"status": "failed", "error": str(exc)}
-        else:
-            is_final_try = job_try >= settings.WORKER_MAX_TRIES
-            await update_job_metadata(
-                ctx["redis"],
-                job_id,
-                status="failed" if is_final_try else "retrying",
-                attempt=job_try,
-                finished_at=datetime.now(timezone.utc) if is_final_try else None,
-                error_code=f"AsaasAPIError_{exc.status_code}",
-                error_message=exc.body[:500],
-            )
-            if is_final_try:
-                await register_dead_letter(ctx["redis"], "create_subscription_worker", job_id)
-            ctx["logger"].warning(
-                "Subscription creation transient failure — Asaas returned server error, retry scheduled",
-                extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
-            )
-            raise
+    except GatewayAPIError as exc:
+        return await _handle_gateway_api_error(
+            ctx, exc, job_name="create_subscription_worker", job_id=job_id, job_try=job_try, label="Subscription creation"
+        )
     except Exception as e:
         is_final_try = job_try >= settings.WORKER_MAX_TRIES
         await update_job_metadata(
@@ -416,48 +427,10 @@ async def create_checkout_worker(ctx, dto_dict: dict):
         await register_dead_letter(ctx["redis"], "create_checkout_worker", job_id)
         ctx["logger"].warning("Checkout rejected", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
         return {"status": "failed", "error": str(exc)}
-    except AsaasAPIError as exc:
-        is_client_error = 400 <= exc.status_code < 500
-        if is_client_error:
-            await update_job_metadata(
-                ctx["redis"],
-                job_id,
-                status="failed",
-                attempt=job_try,
-                finished_at=datetime.now(timezone.utc),
-                error_code=f"AsaasAPIError_{exc.status_code}",
-                error_message=exc.body[:500],
-            )
-            await register_dead_letter(ctx["redis"], "create_checkout_worker", job_id)
-            ctx["logger"].error(
-                "Checkout creation failed terminally - Asaas returned client error",
-                extra={
-                    "job_id": job_id,
-                    "job_try": job_try,
-                    "asaas_status": exc.status_code,
-                    "asaas_body": exc.body,
-                    "terminal": is_client_error,
-                },
-            )
-            return {"status": "failed", "error": str(exc)}
-        else:
-            is_final_try = job_try >= settings.WORKER_MAX_TRIES
-            await update_job_metadata(
-                ctx["redis"],
-                job_id,
-                status="failed" if is_final_try else "retrying",
-                attempt=job_try,
-                finished_at=datetime.now(timezone.utc) if is_final_try else None,
-                error_code=f"AsaasAPIError_{exc.status_code}",
-                error_message=exc.body[:500],
-            )
-            if is_final_try:
-                await register_dead_letter(ctx["redis"], "create_checkout_worker", job_id)
-            ctx["logger"].warning(
-                "Checkout creation transient failure - Asaas returned server error, retry scheduled",
-                extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
-            )
-            raise
+    except GatewayAPIError as exc:
+        return await _handle_gateway_api_error(
+            ctx, exc, job_name="create_checkout_worker", job_id=job_id, job_try=job_try, label="Checkout creation"
+        )
     except Exception as exc:
         is_final_try = job_try >= settings.WORKER_MAX_TRIES
         await update_job_metadata(
@@ -563,42 +536,10 @@ async def cancel_subscription_worker(ctx, dto_dict: dict):
             extra={"job_id": job_id, "job_try": job_try, "error": str(exc)},
         )
         return {"status": "failed", "error": str(exc)}
-    except AsaasAPIError as exc:
-        is_client_error = 400 <= exc.status_code < 500
-        if is_client_error:
-            await update_job_metadata(
-                ctx["redis"],
-                job_id,
-                status="failed",
-                attempt=job_try,
-                finished_at=datetime.now(timezone.utc),
-                error_code=f"AsaasAPIError_{exc.status_code}",
-                error_message=exc.body[:500],
-            )
-            await register_dead_letter(ctx["redis"], "cancel_subscription_worker", job_id)
-            ctx["logger"].error(
-                "Subscription cancellation failed terminally — Asaas returned client error",
-                extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
-            )
-            return {"status": "failed", "error": str(exc)}
-        else:
-            is_final_try = job_try >= settings.WORKER_MAX_TRIES
-            await update_job_metadata(
-                ctx["redis"],
-                job_id,
-                status="failed" if is_final_try else "retrying",
-                attempt=job_try,
-                finished_at=datetime.now(timezone.utc) if is_final_try else None,
-                error_code=f"AsaasAPIError_{exc.status_code}",
-                error_message=exc.body[:500],
-            )
-            if is_final_try:
-                await register_dead_letter(ctx["redis"], "cancel_subscription_worker", job_id)
-            ctx["logger"].warning(
-                "Subscription cancellation transient failure — Asaas returned server error, retry scheduled",
-                extra={"job_id": job_id, "job_try": job_try, "asaas_status": exc.status_code, "asaas_body": exc.body},
-            )
-            raise
+    except GatewayAPIError as exc:
+        return await _handle_gateway_api_error(
+            ctx, exc, job_name="cancel_subscription_worker", job_id=job_id, job_try=job_try, label="Subscription cancellation"
+        )
     except Exception as exc:
         is_final_try = job_try >= settings.WORKER_MAX_TRIES
         await update_job_metadata(

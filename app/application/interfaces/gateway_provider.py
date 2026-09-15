@@ -9,6 +9,23 @@ from app.domain.enums.payment_type import PaymentType
 from app.domain.enums.subscription_type import SubscriptionType
 
 
+class GatewayAPIError(Exception):
+    """Erro HTTP devolvido por um gateway. 4xx e terminal; 5xx e transitorio."""
+
+    provider_label = "Gateway"
+
+    def __init__(self, status_code: int, body: str, method: str, endpoint: str) -> None:
+        super().__init__(f"{self.provider_label} {method} {endpoint} → {status_code}: {body}")
+        self.status_code = status_code
+        self.body = body
+        self.method = method
+        self.endpoint = endpoint
+
+    @property
+    def is_client_error(self) -> bool:
+        return 400 <= self.status_code < 500
+
+
 @dataclass
 class SubscriptionPaymentResponse:
     payment_id: str
