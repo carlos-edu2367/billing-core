@@ -2,12 +2,14 @@ from app.application.interfaces.gateway_provider import GetGateway, InterfaceGat
 from app.domain.enums.gateway_provider import GatewayProvider
 from app.domain.errors import UnsupportedGatewayError
 from app.infra.interfaces.asaas_provider import AsaasProvider
+from app.infra.interfaces.mercadopago_provider import MercadoPagoProvider
 
 
 class GetGatewayInfra(GetGateway):
     def __init__(self):
         self.providers: dict[GatewayProvider, type[InterfaceGateway]] = {
             GatewayProvider.ASAAS: AsaasProvider,
+            GatewayProvider.MERCADOPAGO: MercadoPagoProvider,
         }
 
     def get(self, gateway: GatewayProvider) -> InterfaceGateway:

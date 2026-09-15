@@ -1,5 +1,5 @@
 from collections.abc import Callable
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 
 from app.application.dtos.request.webhook import WebhookPayload
@@ -17,12 +17,15 @@ from app.domain.errors import DomainError
 from app.infra.config import settings
 from app.infra.interfaces.mercadopago_api import MercadoPagoAPI
 from app.infra.interfaces.mercadopago_mappers import (
+    CYCLE_BY_FREQUENCY_MONTHS,
+    FREQUENCY_MONTHS_BY_CYCLE,
     MIN_PIX_EXPIRATION_MINUTES,
     billing_type_from_payment,
     excluded_payment_types,
     net_value,
     parse_datetime,
     payment_status_to_gateway,
+    preapproval_status_to_gateway,
     resolve_checkout_status,
 )
 
@@ -168,10 +171,7 @@ class MercadoPagoProvider(InterfaceGateway):
             external_reference=payment.get("external_reference"),
         )
 
-    # ------------------------------------------------ assinaturas e webhook (Tasks 7-8)
-
-    def normalize_webhook(self, payload: dict) -> WebhookPayload:
-        raise NotImplementedError
+    # -------------------------------------------------------------- assinaturas
 
     async def create_subscription(
         self,
@@ -183,13 +183,93 @@ class MercadoPagoProvider(InterfaceGateway):
         description: str,
         external_reference: str | None = None,
     ) -> str:
-        raise NotImplementedError
+        if billing_type != PaymentType.CREDIT_CARD:
+            raise DomainError("Mercado Pago so suporta assinaturas recorrentes com cartao de credito.")
+
+        customer = await self.api.get(f"/v1/customers/{customer_provider_id}")
+        payer_email = customer.get("email")
+        if not payer_email:
+            raise DomainError("Customer do Mercado Pago sem e-mail para a assinatura.")
+
+        auto_recurring = {
+            "frequency": FREQUENCY_MONTHS_BY_CYCLE[cycle],
+            "frequency_type": "months",
+            "transaction_amount": float(value),
+            "currency_id": "BRL",
+        }
+        if next_due_date > self._now().date():
+            auto_recurring["start_date"] = _iso(datetime.combine(next_due_date, time.min, tzinfo=timezone.utc))
+
+        payload = {
+            "reason": description,
+            "payer_email": payer_email,
+            "auto_recurring": auto_recurring,
+            "back_url": settings.MERCADOPAGO_SUBSCRIPTION_BACK_URL,
+            # Sem cartao tokenizado no fluxo: o pagador conclui a autorizacao no init_point.
+            "status": "pending",
+        }
+        if external_reference:
+            payload["external_reference"] = external_reference
+
+        response = await self.api.post(
+            "/preapproval",
+            payload,
+            idempotency_key=f"preapproval:{external_reference}" if external_reference else None,
+        )
+        return str(response["id"])
 
     async def get_subscription_payment(self, subscription_id: str) -> list[SubscriptionPaymentResponse]:
-        raise NotImplementedError
+        preapproval = await self.api.get(f"/preapproval/{subscription_id}")
+        search = await self.api.get("/authorized_payments/search", params={"preapproval_id": subscription_id})
+
+        payments = [
+            SubscriptionPaymentResponse(
+                payment_id=str(invoice["payment"]["id"]),
+                status=payment_status_to_gateway(invoice["payment"].get("status")),
+                due_date=(parse_datetime(invoice.get("debit_date")) or self._now()).date(),
+                value=Decimal(str(invoice["transaction_amount"])),
+                invoice_url=None,
+                billing_type="CREDIT_CARD",
+            )
+            for invoice in search.get("results") or []
+            if (invoice.get("payment") or {}).get("id")
+        ]
+        if payments:
+            return payments
+
+        # Antes da autorizacao nao existe fatura. O pagamento local nasce com o id da
+        # assinatura e e revinculado quando a primeira fatura chega (process_webhook).
+        next_payment = parse_datetime(preapproval.get("next_payment_date")) or self._now()
+        return [
+            SubscriptionPaymentResponse(
+                payment_id=subscription_id,
+                status="PENDING",
+                due_date=next_payment.date(),
+                value=Decimal(str(preapproval["auto_recurring"]["transaction_amount"])),
+                invoice_url=preapproval.get("init_point"),
+                billing_type="CREDIT_CARD",
+            )
+        ]
 
     async def cancel_subscription(self, subscription_id: str) -> str:
-        raise NotImplementedError
+        response = await self.api.put(f"/preapproval/{subscription_id}", {"status": "cancelled"})
+        return str(response.get("id") or subscription_id)
 
     async def verify_status(self, subscription_id: str) -> SubscriptionStatusResponse:
+        preapproval = await self.api.get(f"/preapproval/{subscription_id}")
+        recurring = preapproval.get("auto_recurring") or {}
+        status = preapproval_status_to_gateway(preapproval.get("status"))
+        next_payment = parse_datetime(preapproval.get("next_payment_date"))
+        return SubscriptionStatusResponse(
+            subscription_id=str(preapproval["id"]),
+            status=status,
+            deleted=status == "CANCELED",
+            next_due_date=next_payment.date() if next_payment else self._now().date(),
+            value=Decimal(str(recurring.get("transaction_amount", 0))),
+            cycle=CYCLE_BY_FREQUENCY_MONTHS.get(int(recurring.get("frequency") or 1), "MONTHLY"),
+        )
+
+    # ------------------------------------------------------------------ webhook (Task 8)
+
+    def normalize_webhook(self, payload: dict) -> WebhookPayload:
         raise NotImplementedError
