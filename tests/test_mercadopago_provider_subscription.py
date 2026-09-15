@@ -68,6 +68,49 @@ async def test_create_subscription_posts_pending_preapproval_for_customer_email(
     }
 
 
+async def test_create_subscription_uses_request_back_url_when_present(fake_mp_api):
+    api = fake_mp_api(
+        {
+            ("GET", "/v1/customers/cus-1"): {"id": "cus-1", "email": "joao@exemplo.com"},
+            ("POST", "/preapproval"): preapproval(),
+        }
+    )
+
+    await make_provider(api).create_subscription(
+        customer_provider_id="cus-1",
+        billing_type=PaymentType.CREDIT_CARD,
+        value=Decimal("129.90"),
+        next_due_date=date(2026, 10, 1),
+        cycle=SubscriptionType.SEMIANNUAL,
+        description="Plano Pro",
+        external_reference="sub_marketfy_1",
+        back_url="https://app.marketfy.com/billing/retorno?tipo=subscription&ref=sub_marketfy_1",
+    )
+
+    assert api.calls[1]["payload"]["back_url"] == "https://app.marketfy.com/billing/retorno?tipo=subscription&ref=sub_marketfy_1"
+
+
+async def test_create_subscription_falls_back_to_settings_back_url_when_absent(fake_mp_api):
+    api = fake_mp_api(
+        {
+            ("GET", "/v1/customers/cus-1"): {"id": "cus-1", "email": "joao@exemplo.com"},
+            ("POST", "/preapproval"): preapproval(),
+        }
+    )
+
+    await make_provider(api).create_subscription(
+        customer_provider_id="cus-1",
+        billing_type=PaymentType.CREDIT_CARD,
+        value=Decimal("129.90"),
+        next_due_date=date(2026, 10, 1),
+        cycle=SubscriptionType.SEMIANNUAL,
+        description="Plano Pro",
+        external_reference="sub_marketfy_1",
+    )
+
+    assert api.calls[1]["payload"]["back_url"] == settings.MERCADOPAGO_SUBSCRIPTION_BACK_URL
+
+
 async def test_create_subscription_starting_today_omits_start_date(fake_mp_api):
     api = fake_mp_api({("GET", "/v1/customers/cus-1"): {"id": "cus-1", "email": "joao@exemplo.com"}, ("POST", "/preapproval"): preapproval()})
 

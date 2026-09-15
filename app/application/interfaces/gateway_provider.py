@@ -99,6 +99,7 @@ class InterfaceGateway(ABC):
         cycle: SubscriptionType,
         description: str,
         external_reference: str | None = None,
+        back_url: str | None = None,
     ) -> str:
         pass
 

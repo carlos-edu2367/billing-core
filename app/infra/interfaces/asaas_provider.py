@@ -144,6 +144,7 @@ class AsaasProvider(InterfaceGateway):
         cycle: SubscriptionType,
         description: str,
         external_reference: str | None = None,
+        back_url: str | None = None,
     ) -> str:
         if billing_type == PaymentType.DEBIT_CARD:
             raise DomainError("DEBIT_CARD não é suportado pelo Asaas para assinaturas recorrentes.")

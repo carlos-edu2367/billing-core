@@ -99,6 +99,7 @@ class CreateSubscription:
                 cycle=request.subscription_type,
                 description=request.description,
                 external_reference=request.system_sub_id,
+                back_url=request.back_url,
             )
 
             subscription = Subscription(

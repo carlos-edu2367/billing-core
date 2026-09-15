@@ -185,6 +185,7 @@ class MercadoPagoProvider(InterfaceGateway):
         cycle: SubscriptionType,
         description: str,
         external_reference: str | None = None,
+        back_url: str | None = None,
     ) -> str:
         if billing_type != PaymentType.CREDIT_CARD:
             raise DomainError("Mercado Pago so suporta assinaturas recorrentes com cartao de credito.")
@@ -207,7 +208,7 @@ class MercadoPagoProvider(InterfaceGateway):
             "reason": description,
             "payer_email": payer_email,
             "auto_recurring": auto_recurring,
-            "back_url": settings.MERCADOPAGO_SUBSCRIPTION_BACK_URL,
+            "back_url": back_url or settings.MERCADOPAGO_SUBSCRIPTION_BACK_URL,
             # Sem cartao tokenizado no fluxo: o pagador conclui a autorizacao no init_point.
             "status": "pending",
         }
