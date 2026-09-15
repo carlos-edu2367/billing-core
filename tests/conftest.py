@@ -136,3 +136,29 @@ def client(fake_redis, monkeypatch):
         app.state.redis_pool = fake_redis
         yield test_client
         app.dependency_overrides.clear()
+
+
+class FakeMercadoPagoAPI:
+    """Substitui MercadoPagoAPI: responde por (metodo, endpoint) e registra as chamadas."""
+
+    def __init__(self, responses: dict[tuple[str, str], dict]):
+        self.responses = responses
+        self.calls: list[dict] = []
+
+    def _respond(self, method: str, endpoint: str, **call):
+        self.calls.append({"method": method, "endpoint": endpoint, **call})
+        return self.responses[(method, endpoint)]
+
+    async def get(self, endpoint, params=None):
+        return self._respond("GET", endpoint, params=params)
+
+    async def post(self, endpoint, payload, idempotency_key=None):
+        return self._respond("POST", endpoint, payload=payload, idempotency_key=idempotency_key)
+
+    async def put(self, endpoint, payload):
+        return self._respond("PUT", endpoint, payload=payload)
+
+
+@pytest.fixture
+def fake_mp_api():
+    return FakeMercadoPagoAPI
