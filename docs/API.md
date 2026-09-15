@@ -11,7 +11,7 @@ O par precisa existir em `INTERNAL_API_CLIENTS`.
 
 ### Scopes atuais
 
-- `customers:create` (Criar/Consultar clientes no Asaas)
+- `customers:create` (Criar/Consultar clientes no gateway padrão)
 - `subscriptions:create` (Criar assinaturas)
 - `subscriptions:cancel` (Cancelar assinaturas)
 - `payments:create` (Criar checkouts avulsos)
