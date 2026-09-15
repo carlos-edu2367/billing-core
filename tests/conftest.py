@@ -1,4 +1,6 @@
 import os
+os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://billing:billing@localhost:5432/billing_core_test")
+os.environ.setdefault("ASAAS_API_TOKEN", "fake-asaas-api-token")
 os.environ["ASAAS_WEBHOOK_SECRET"] = "fake-asaas-webhook-secret-long-enough-32-chars"
 os.environ["INTERNAL_WEBHOOK_SIGNATURE"] = "test-webhook-signature-for-dev-only-32-chars"
 
