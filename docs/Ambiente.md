@@ -70,6 +70,7 @@
 - `customers:create`
 - `subscriptions:create`
 - `subscriptions:cancel`
+- `subscriptions:read` (consultar status ao vivo — `GET /v1/subscriptions/{id}`)
 - `payments:create`
 - `payments:read`
 - `jobs:read`

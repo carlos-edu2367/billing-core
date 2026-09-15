@@ -37,7 +37,7 @@ Com Mercado Pago, a vigência mínima efetiva do checkout é 30 minutos (mínimo
 
 O cliente interno deve ter `payments:create`, `payments:read` e `jobs:read`. Registre o host do callback assinado em `ALLOWED_INTERNAL_WEBHOOK_HOSTS` e os hosts HTTPS das três URLs em `ALLOWED_CHECKOUT_REDIRECT_HOSTS`.
 
-Assinaturas continuam em `POST /v1/subscriptions` e exigem customer criado previamente em `POST /v1/customers`. Com Mercado Pago, o `checkout_url` devolvido pelo job é o link para o pagador autorizar o cartão (`init_point` do `preapproval`); a assinatura só fica `active` depois que a primeira fatura é aprovada, cerca de 1 hora após a autorização.
+Assinaturas continuam em `POST /v1/subscriptions` e exigem customer criado previamente em `POST /v1/customers`. Com Mercado Pago, o `checkout_url` devolvido pelo job é o link para o pagador autorizar o cartão (`init_point` do `preapproval`); a assinatura só fica `active` depois que a primeira fatura é aprovada, cerca de 1 hora após a autorização. `back_url` é opcional; quando enviado, precisa estar em `ALLOWED_CHECKOUT_REDIRECT_HOSTS` e substitui `MERCADOPAGO_SUBSCRIPTION_BACK_URL` só para essa assinatura. `GET /v1/subscriptions/{id}` consulta o status ao vivo no gateway (scope `subscriptions:read`) — útil para saber se o cartão já foi autorizado antes da primeira fatura chegar.
 
 O gateway usado para customers, checkouts e assinaturas **novos** é controlado por `DEFAULT_GATEWAY_PROVIDER` (`mercadopago` por padrão). Registros já criados no Asaas continuam operados pelo Asaas — o gateway fica gravado por registro e não muda retroativamente.
 

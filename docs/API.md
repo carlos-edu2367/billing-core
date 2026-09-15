@@ -14,6 +14,7 @@ O par precisa existir em `INTERNAL_API_CLIENTS`.
 - `customers:create` (Criar/Consultar clientes no gateway padrão)
 - `subscriptions:create` (Criar assinaturas)
 - `subscriptions:cancel` (Cancelar assinaturas)
+- `subscriptions:read` (Consultar status ao vivo de uma assinatura)
 - `payments:create` (Criar checkouts avulsos)
 - `payments:read` (Consultar pagamentos locais)
 - `jobs:read` (Consultar estado de processamento assíncrono)
@@ -94,9 +95,12 @@ Cria uma solicitacao de assinatura e retorna um `job_id`.
   "system": "neectify_shop",
   "system_sub_id": "sub_shop_001",
   "expires_at": "2027-05-01T00:00:00Z",
-  "webhook_link": "https://hooks.neectify.local/billing/subscription"
+  "webhook_link": "https://hooks.neectify.local/billing/subscription",
+  "back_url": "https://app.neectify.local/billing/retorno?ref=sub-001"
 }
 ```
+
+`back_url` e opcional. Quando enviado, precisa estar em `ALLOWED_CHECKOUT_REDIRECT_HOSTS` e substitui `MERCADOPAGO_SUBSCRIPTION_BACK_URL` so para essa assinatura (ignorado pelo Asaas).
 
 #### Resposta `202`
 
@@ -162,6 +166,37 @@ Solicita o cancelamento assincrono de uma assinatura existente.
 - assinaturas ja canceladas retornam `409 conflict`
 - assinatura inexistente ou de outro sistema retorna `404 not_found`
 - `reason` e opcional e limitado a 500 caracteres
+
+### `GET /v1/subscriptions/{subscription_id}`
+
+Consulta o status atual da assinatura direto no gateway (sem cache local). Util quando o pagador acabou de voltar do checkout e o consumidor quer saber se o cartao ja foi autorizado, sem esperar o webhook da primeira fatura (que so chega cerca de 1h depois no Mercado Pago).
+
+#### Auth
+
+- obrigatoria
+- scope: `subscriptions:read`
+
+#### Path param
+
+- `subscription_id`: UUID interno da assinatura
+
+#### Resposta `200`
+
+```json
+{
+  "subscription_id": "018f2b2e-6e2a-7c2e-9a2e-2b2e6e2a7c2e",
+  "gateway_status": "ACTIVE",
+  "next_due_date": "2026-11-01",
+  "value": "129.90",
+  "cycle": "MONTHLY"
+}
+```
+
+#### Regras importantes
+
+- a assinatura precisa pertencer ao `X-System` autenticado, senao `404 not_found`
+- `gateway_status` usa o mesmo vocabulario compartilhado pelos adapters (`ACTIVE`, `PENDING`, `PAUSED`, `CANCELED`)
+- consulta ao vivo no gateway a cada chamada; nao ha cache local nem webhook novo
 
 ### `GET /v1/jobs/{job_id}`
 

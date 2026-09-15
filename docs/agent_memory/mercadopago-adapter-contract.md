@@ -96,3 +96,20 @@ e `tests/test_mercadopago_resolve_webhook.py`.
   tarefa separada (`task_aec1d897` nesta sessão).
 - `ReconcilePayment` (`app/application/use_cases/reconcile_payment.py`) não tem nenhum caller;
   só a função livre `apply_gateway_payment_status` do mesmo módulo é usada.
+
+## `back_url` por assinatura e consulta de status ao vivo (2026-09-15)
+
+Implementado conforme `docs/superpowers/plans/2026-09-15-subscription-checkout-support-backend.md`
+para o consumidor Marketfy (ver [[billing-mp-alignment-analysis]] no repo do Marketfy).
+
+`create_subscription()` aceita `back_url` opcional em toda a cadeia (`CreateSubscriptionDTO`,
+`CreateSubscriptionRequest`, `InterfaceGateway.create_subscription`, os dois adapters). Quando
+ausente, o Mercado Pago cai em `settings.MERCADOPAGO_SUBSCRIPTION_BACK_URL` como antes; o Asaas
+ignora o parametro (nunca teve `back_url` por assinatura).
+
+`GET /v1/subscriptions/{id}` (scope `subscriptions:read`) e um proxy fino para
+`InterfaceGateway.verify_status()`, que ja existia nos dois adapters — nenhum metodo de adapter
+novo foi necessario. Nao ha cache local: cada chamada consulta o gateway ao vivo. Resolve o
+mesmo problema que um evento de webhook novo resolveria (saber se o cartao ja foi autorizado
+antes da primeira fatura chegar, ~1h depois) sem tocar no vocabulario de webhook compartilhado
+com o Food — ver a spec para a decisao completa.
