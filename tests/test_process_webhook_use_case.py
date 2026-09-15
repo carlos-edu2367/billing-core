@@ -881,3 +881,74 @@ async def test_process_webhook_still_discards_unknown_events():
         details=Details(id=None, subscription="gw-sub-1"),
     )
     assert await service.execute(GatewayProvider.ASAAS, payload) is None
+
+
+@pytest.mark.asyncio
+async def test_first_invoice_takes_over_provisional_subscription_payment():
+    subscription = make_subscription()
+    subscription.gateway_provider = GatewayProvider.MERCADOPAGO
+    provisional = Payment.create_subscription_payment(
+        description="Pagamento relacionado a assinatura: Plano Pro",
+        gateway=GatewayProvider.MERCADOPAGO,
+        system_payment_id="sub-1:gw-sub-1",
+        provider_payment_id="gw-sub-1",
+        value=Decimal("99.90"),
+        from_system=System.NEECTIFY_SHOP,
+        subscription_id=subscription.id,
+        checkout_link="https://www.mercadopago.com.br/subscriptions/checkout?preapproval_id=gw-sub-1",
+        payment_type=PaymentType.CREDIT_CARD,
+    )
+    provisional.id = uuid4()
+    payment_repo = FakePaymentRepo(existing=provisional)
+    service = ProcessWebhookService(
+        payment_repo=payment_repo,
+        sub_repo=FakeSubscriptionRepo(subscription),
+        uow=FakeUow(),
+        webhook_event_repo=FakeWebhookEventRepo(),
+    )
+    payload = WebhookPayload(
+        event=EventType.PAYMENT_RECEIVED,
+        source_event_id="authorized_payment:7001:approved",
+        details=make_details(subscription="gw-sub-1", payment_id="mp-pay-1"),
+    )
+
+    result = await service.execute(GatewayProvider.MERCADOPAGO, payload)
+
+    assert result.payment_id == provisional.id
+    assert provisional.provider_payment_id == "mp-pay-1"
+    assert provisional.payment_status == PaymentStatus.PAID
+    assert {id(saved) for saved in payment_repo.saved} == {id(provisional)}
+    assert subscription.status == SubscriptionStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_provisional_payment_of_another_subscription_is_not_taken_over():
+    subscription = make_subscription()
+    foreign = Payment.create_subscription_payment(
+        description="Outra assinatura",
+        gateway=GatewayProvider.MERCADOPAGO,
+        system_payment_id="sub-x:gw-sub-1",
+        provider_payment_id="gw-sub-1",
+        value=Decimal("99.90"),
+        from_system=System.NEECTIFY_SHOP,
+        subscription_id=uuid4(),
+        payment_type=PaymentType.CREDIT_CARD,
+    )
+    foreign.id = uuid4()
+    payment_repo = FakePaymentRepo(existing=foreign)
+    service = ProcessWebhookService(
+        payment_repo=payment_repo,
+        sub_repo=FakeSubscriptionRepo(subscription),
+        uow=FakeUow(),
+        webhook_event_repo=FakeWebhookEventRepo(),
+    )
+    payload = WebhookPayload(
+        event=EventType.PAYMENT_RECEIVED,
+        source_event_id="authorized_payment:7001:approved",
+        details=make_details(subscription="gw-sub-1", payment_id="mp-pay-1"),
+    )
+
+    result = await service.execute(GatewayProvider.MERCADOPAGO, payload)
+
+    assert foreign.provider_payment_id == "gw-sub-1"
+    assert result.payment_id != foreign.id

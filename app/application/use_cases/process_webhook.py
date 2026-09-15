@@ -135,7 +135,7 @@ class ProcessWebhookService():
 
         if payload.event == EventType.PAYMENT_RECEIVED and payload.details.subscription:
             sub = await self.sub_repo.get_by_provider_id_for_update(payload.details.subscription)
-            payment = await self.payment_repo.get_by_provider_id(payload.details.id)
+            payment = await self._find_subscription_payment(sub, payload.details.id)
 
             if payment and payment.payment_status == PaymentStatus.PAID:
                 event.mark_as_processed()
@@ -191,7 +191,7 @@ class ProcessWebhookService():
 
         if payload.event == EventType.PAYMENT_CONFIRMED and payload.details.subscription:
             sub = await self.sub_repo.get_by_provider_id_for_update(payload.details.subscription)
-            payment = await self.payment_repo.get_by_provider_id(payload.details.id)
+            payment = await self._find_subscription_payment(sub, payload.details.id)
 
             if payment is None:
                 billing_type_val = payload.details.billing_type or "CREDIT_CARD"
@@ -275,6 +275,24 @@ class ProcessWebhookService():
                 payment_id=None,
                 subscription_id=sub.id,
             )
+
+        return None
+
+    async def _find_subscription_payment(self, sub, provider_payment_id: str) -> Payment | None:
+        payment = await self.payment_repo.get_by_provider_id(provider_payment_id)
+        if payment is not None:
+            return payment
+
+        # Gateways sem cobranca imediata (Mercado Pago) criam o pagamento inicial com o id
+        # da propria assinatura; a primeira fatura real assume esse registro.
+        provisional = await self.payment_repo.get_by_provider_id(sub.gateway_subscription_id)
+        if (
+            provisional is not None
+            and provisional.subscription_id == sub.id
+            and provisional.payment_status == PaymentStatus.PENDING
+        ):
+            provisional.provider_payment_id = provider_payment_id
+            return provisional
 
         return None
 
