@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from uuid import UUID
 
 from app.domain.entities.payment import Payment
+from app.domain.enums.gateway_provider import GatewayProvider
 from app.domain.enums.system import System
 
 class PaymentRepository(ABC):
@@ -36,6 +37,11 @@ class PaymentRepository(ABC):
         """
         pass
     
+    @abstractmethod
+    async def list_pending_checkouts(self, gateway: GatewayProvider, limit: int) -> list[Payment]:
+        """Checkouts avulsos ainda pendentes no gateway, do atualizado ha mais tempo ao mais recente."""
+        pass
+
     @abstractmethod
     async def save(self, payment: Payment) -> Payment:
         pass

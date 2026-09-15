@@ -1,4 +1,7 @@
 from app.domain.entities.payment import Payment
+from app.domain.enums.gateway_provider import GatewayProvider
+from app.domain.enums.movimentation_type import MovimentationType
+from app.domain.enums.payment_status import PaymentStatus
 from app.domain.enums.system import System
 from app.infra.db.models.payment import PaymentModel
 from app.application.repositories.payment_repo import PaymentRepository
@@ -59,7 +62,23 @@ class PaymentRepositoryINFRA(PaymentRepository):
         r = await self.session.execute(stmt)
         r = r.scalars().all()
         return [x.to_domain() for x in r]
-    
+
+    async def list_pending_checkouts(self, gateway: GatewayProvider, limit: int) -> list[Payment]:
+        stmt = (
+            select(PaymentModel)
+            .where(
+                PaymentModel.gateway == gateway,
+                PaymentModel.payment_status == PaymentStatus.PENDING,
+                PaymentModel.movimentation_type == MovimentationType.DEFAULT_PAYMENT,
+                PaymentModel.subscription_id.is_(None),
+                PaymentModel.checkout_link.is_not(None),
+            )
+            .order_by(PaymentModel.updated_at.asc())
+            .limit(limit)
+        )
+        r = await self.session.execute(stmt)
+        return [x.to_domain() for x in r.scalars().all()]
+
     async def save(self, payment: Payment) -> Payment:
         if not payment.id:
             new = PaymentModel(

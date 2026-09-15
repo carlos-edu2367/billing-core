@@ -14,6 +14,7 @@ from .tasks import (
     process_webhook,
     send_internal_webhook,
     reconcile_gateway_operations_worker,
+    sync_pending_checkouts_worker,
 )
 
 
@@ -107,13 +108,25 @@ def get_worker() -> Worker:
                 timeout=settings.WORKER_JOB_TIMEOUT_SECONDS,
                 max_tries=settings.WORKER_MAX_TRIES,
             ),
+            func(
+                sync_pending_checkouts_worker,
+                name="workers:tasks.sync_pending_checkouts_worker",
+                keep_result=settings.WORKER_KEEP_RESULT_SECONDS,
+                timeout=settings.WORKER_JOB_TIMEOUT_SECONDS,
+                max_tries=1,
+            ),
         ],
         cron_jobs=[
             cron(
                 reconcile_gateway_operations_worker,
                 name="workers:tasks.reconcile_gateway_operations_worker",
                 minute={0, 15, 30, 45},
-            )
+            ),
+            cron(
+                sync_pending_checkouts_worker,
+                name="workers:tasks.sync_pending_checkouts_worker",
+                minute=set(range(0, 60, 5)),
+            ),
         ],
         redis_settings=RedisSettings.from_dsn(settings.REDIS_URL),
         on_startup=startup,

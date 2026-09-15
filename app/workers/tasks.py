@@ -34,6 +34,7 @@ from app.infra.repo.payment_repo import PaymentRepositoryINFRA
 from app.infra.repo.subscription_repo import SubscriptionRepositoryINFRA
 from app.infra.repo.webhook_event_repo import WebhookEventRepositoryINFRA
 from app.application.use_cases.process_webhook import ProcessWebhookService
+from app.application.use_cases.sync_checkout_status import SyncCheckoutStatus
 
 
 def _dump_result(result):
@@ -951,3 +952,54 @@ async def reconcile_gateway_operations_worker(ctx):
                         )
     finally:
         await ctx["redis"].delete(lock_key)
+
+
+SYNC_CHECKOUTS_BATCH_SIZE = 100
+
+
+async def sync_pending_checkouts_worker(ctx):
+    """Cron: aplica PAID/EXPIRED a checkouts de gateways que nao notificam expiracao."""
+    lock_key = "billing_core:sync_checkouts_lock"
+    lock_acquired = await ctx["redis"].set(lock_key, "locked", ex=240, nx=True)
+    if not lock_acquired:
+        return {"status": "skipped", "reason": "lock_held"}
+
+    updated = 0
+    try:
+        async with AsyncSessionLocal() as session:
+            pending_payments = await PaymentRepositoryINFRA(session).list_pending_checkouts(
+                GatewayProvider.MERCADOPAGO, SYNC_CHECKOUTS_BATCH_SIZE
+            )
+
+        for pending in pending_payments:
+            internal_delivery_id: UUID | None = None
+            async with AsyncSessionLocal() as session:
+                payment_repo = PaymentRepositoryINFRA(session)
+                delivery_repo = InternalWebhookDeliveryRepositoryINFRA(session)
+                uow = UowProvider(session)
+                service = SyncCheckoutStatus(get_gateway=GetGatewayInfra(), uow=uow, payment_repo=payment_repo)
+                try:
+                    payment = await service.execute(pending)
+                    if payment is None:
+                        continue
+                    updated += 1
+                    delivery = await _build_payment_internal_delivery(payment)
+                    if delivery is not None and await delivery_repo.get_by_dedupe_key(delivery.dedupe_key) is None:
+                        delivery = await delivery_repo.save(delivery)
+                        await uow.commit()
+                        internal_delivery_id = delivery.id
+                except Exception as exc:
+                    await uow.rollback()
+                    ctx["logger"].error(
+                        "Failed to sync pending checkout",
+                        extra={"payment_id": str(pending.id), "error": str(exc)},
+                    )
+                    continue
+
+            if internal_delivery_id is not None:
+                await ctx["redis"].enqueue_job("workers:tasks.send_internal_webhook", str(internal_delivery_id))
+    finally:
+        await ctx["redis"].delete(lock_key)
+
+    ctx["logger"].info("Pending checkouts synced", extra={"updated": updated})
+    return {"status": "success", "updated": updated}
