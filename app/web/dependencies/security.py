@@ -7,6 +7,7 @@ from fastapi import Depends, Header, HTTPException, Request, status
 
 from app.domain.enums.system import System
 from app.infra.config import settings
+from app.infra.interfaces.mercadopago_signature import is_valid_signature
 from app.web.dependencies.common import get_redis_pool
 
 
@@ -83,19 +84,7 @@ def require_internal_auth(*required_scopes: str) -> Callable:
     return dependency
 
 
-async def validate_asaas_webhook(
-    request: Request,
-    redis=Depends(get_redis_pool),
-    asaas_access_token: str | None = Header(
-        default=None,
-        alias="asaas-access-token",
-        description=(
-            "Secret compartilhado com o Asaas para autenticar o webhook. "
-            "Deve corresponder a `ASAAS_WEBHOOK_SECRET`."
-        ),
-        examples=["whsec_xpto123"],
-    ),
-):
+def _ensure_json_content_type(request: Request) -> None:
     content_type = request.headers.get("content-type", "")
     if content_type and "application/json" not in content_type.lower():
         raise HTTPException(
@@ -103,12 +92,8 @@ async def validate_asaas_webhook(
             detail="Webhook deve usar content-type application/json.",
         )
 
-    if not asaas_access_token or not hmac.compare_digest(asaas_access_token, settings.ASAAS_WEBHOOK_SECRET):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Webhook nao autorizado.",
-        )
 
+async def _read_webhook_body(request: Request, redis) -> WebhookValidationResult:
     raw_body = await request.body()
     if not raw_body:
         raise HTTPException(
@@ -124,9 +109,61 @@ async def validate_asaas_webhook(
 
     replay_hash = hashlib.sha256(raw_body).hexdigest()
     replay_key = f"billing_core:webhook_replay:{replay_hash}"
-    existing_replay = await redis.get(replay_key)
-
-    if existing_replay is not None:
+    if await redis.get(replay_key) is not None:
         return WebhookValidationResult(raw_body=raw_body, replay_key=replay_key, duplicate=True)
 
     return WebhookValidationResult(raw_body=raw_body, replay_key=replay_key)
+
+
+async def validate_asaas_webhook(
+    request: Request,
+    redis=Depends(get_redis_pool),
+    asaas_access_token: str | None = Header(
+        default=None,
+        alias="asaas-access-token",
+        description=(
+            "Secret compartilhado com o Asaas para autenticar o webhook. "
+            "Deve corresponder a `ASAAS_WEBHOOK_SECRET`."
+        ),
+        examples=["whsec_xpto123"],
+    ),
+):
+    _ensure_json_content_type(request)
+
+    if not asaas_access_token or not hmac.compare_digest(asaas_access_token, settings.ASAAS_WEBHOOK_SECRET):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Webhook nao autorizado.",
+        )
+
+    return await _read_webhook_body(request, redis)
+
+
+async def validate_mercadopago_webhook(
+    request: Request,
+    redis=Depends(get_redis_pool),
+    x_signature: str | None = Header(
+        default=None,
+        alias="x-signature",
+        description="Assinatura HMAC do Mercado Pago no formato `ts=<timestamp>,v1=<hash>`.",
+    ),
+    x_request_id: str | None = Header(
+        default=None,
+        alias="x-request-id",
+        description="Identificador da notificacao usado no manifest da assinatura.",
+    ),
+):
+    _ensure_json_content_type(request)
+
+    if not is_valid_signature(
+        secret=settings.MERCADOPAGO_WEBHOOK_SECRET or "",
+        signature_header=x_signature,
+        request_id=x_request_id,
+        data_id=request.query_params.get("data.id"),
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Webhook nao autorizado.",
+        )
+
+    return await _read_webhook_body(request, redis)

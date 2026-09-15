@@ -300,6 +300,59 @@ async def process_webhook(ctx, payload_dict: dict, gateway_provider_str: str):
             await ctx["redis"].delete(f"billing_core:webhook_lock:{event_id}")
 
 
+async def process_gateway_notification(ctx, raw_payload: dict, gateway_provider_str: str):
+    """Notificacao que so traz o id do recurso: busca o estado no gateway e segue o fluxo normal."""
+    job_id = ctx["job_id"]
+    job_try = ctx["job_try"]
+    gateway_provider = GatewayProvider[gateway_provider_str.upper()]
+
+    try:
+        gateway = GetGatewayInfra().get(gateway_provider)
+        payload = await gateway.resolve_webhook(raw_payload)
+    except (DomainError, NotFoundError, ValueError) as exc:
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="failed",
+            attempt=job_try,
+            finished_at=datetime.now(timezone.utc),
+            error_code=exc.__class__.__name__,
+            error_message=str(exc),
+        )
+        await register_dead_letter(ctx["redis"], "process_gateway_notification", job_id)
+        ctx["logger"].warning("Gateway notification rejected", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
+        return {"status": "failed", "error": str(exc)}
+    except GatewayAPIError as exc:
+        return await _handle_gateway_api_error(
+            ctx, exc, job_name="process_gateway_notification", job_id=job_id, job_try=job_try, label="Gateway notification resolution"
+        )
+    except Exception as exc:
+        is_final_try = job_try >= settings.WORKER_MAX_TRIES
+        await update_job_metadata(
+            ctx["redis"],
+            job_id,
+            status="failed" if is_final_try else "retrying",
+            attempt=job_try,
+            finished_at=datetime.now(timezone.utc) if is_final_try else None,
+            error_code=exc.__class__.__name__,
+            error_message=str(exc),
+        )
+        if is_final_try:
+            await register_dead_letter(ctx["redis"], "process_gateway_notification", job_id)
+        ctx["logger"].error("Gateway notification resolution failed", extra={"job_id": job_id, "job_try": job_try, "error": str(exc)})
+        raise
+
+    if payload is None:
+        await update_job_metadata(ctx["redis"], job_id, status="completed", finished_at=datetime.now(timezone.utc))
+        ctx["logger"].info(
+            "Gateway notification ignored",
+            extra={"job_id": job_id, "provider": gateway_provider.value, "topic": raw_payload.get("type")},
+        )
+        return {"status": "ignored", "result": None}
+
+    return await process_webhook(ctx, payload.model_dump(mode="json"), gateway_provider.name)
+
+
 async def create_subscription_worker(ctx, dto_dict: dict, customer_provider_id: str, system_str: str):
     job_id = ctx["job_id"]
     job_try = ctx["job_try"]

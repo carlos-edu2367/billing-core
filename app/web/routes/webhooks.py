@@ -9,7 +9,7 @@ from app.infra.jobs import update_job_metadata
 from app.infra.interfaces.gateway_provider import GetGatewayInfra
 from app.web.dependencies.common import get_redis_pool
 from app.web.dependencies.rate_limit import webhook_rate_limit
-from app.web.dependencies.security import WebhookValidationResult, validate_asaas_webhook
+from app.web.dependencies.security import WebhookValidationResult, validate_asaas_webhook, validate_mercadopago_webhook
 from app.web.schemas.common import build_error_responses
 
 
@@ -115,6 +115,77 @@ async def receive_asaas_webhook(
         provider=gateway_provider.value,
         resource_type="webhook",
         source_event_id=normalized_payload.source_event_id or normalized_payload.details.id,
+    )
+    await redis.setex(
+        webhook_validation.replay_key,
+        settings.WEBHOOK_REPLAY_TTL_SECONDS,
+        "1",
+    )
+
+    return {"job_id": job.job_id, "message": "Webhook recebido para processamento."}
+
+
+@router.post(
+    "/mercadopago",
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(webhook_rate_limit())],
+    summary="Receber webhook Mercado Pago",
+    description="""
+Recebe uma notificacao do Mercado Pago, valida a assinatura `x-signature`, protege contra replay e enfileira a resolucao.
+
+### Fluxo
+1. O Mercado Pago envia `type` e `data.id` (query string e corpo).
+2. O Billing Core valida o HMAC SHA256 do manifest `id:<data.id>;request-id:<x-request-id>;ts:<ts>;` com `MERCADOPAGO_WEBHOOK_SECRET`.
+3. O worker busca o recurso na API do Mercado Pago e segue o mesmo processamento do webhook do Asaas.
+
+### Topicos tratados
+- `payment` (checkout avulso e estornos)
+- `subscription_authorized_payment` (faturas de assinatura)
+- `subscription_preapproval` (cancelamento de assinatura)
+""",
+    responses=build_error_responses(400, 401, 413, 415, 429, 500),
+)
+async def receive_mercadopago_webhook(
+    http_request: Request,
+    webhook_validation: WebhookValidationResult = Depends(validate_mercadopago_webhook),
+    redis=Depends(get_redis_pool),
+):
+    if webhook_validation.duplicate:
+        return {"received": True, "duplicate": True}
+
+    try:
+        payload = json.loads(webhook_validation.raw_body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Payload do webhook deve ser um JSON valido.",
+        ) from exc
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict) or not data.get("id"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Notificacao do Mercado Pago sem data.id.",
+        )
+
+    gateway_provider = GatewayProvider.MERCADOPAGO
+    job = await redis.enqueue_job(
+        "workers:tasks.process_gateway_notification",
+        payload,
+        gateway_provider.name,
+    )
+    await update_job_metadata(
+        redis,
+        job.job_id,
+        status="queued",
+        job_name="process_gateway_notification",
+        attempt=0,
+        max_tries=settings.WORKER_MAX_TRIES,
+        request_id=http_request.state.request_id,
+        created_at=datetime.now(timezone.utc),
+        provider=gateway_provider.value,
+        resource_type="webhook",
+        source_event_id=str(payload.get("id") or data["id"]),
     )
     await redis.setex(
         webhook_validation.replay_key,

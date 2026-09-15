@@ -10,6 +10,7 @@ from .tasks import (
     cancel_subscription_worker,
     create_checkout_worker,
     create_subscription_worker,
+    process_gateway_notification,
     process_webhook,
     send_internal_webhook,
     reconcile_gateway_operations_worker,
@@ -60,6 +61,13 @@ def get_worker() -> Worker:
             func(
                 process_webhook,
                 name="workers:tasks.process_webhook",
+                keep_result=settings.WORKER_KEEP_RESULT_SECONDS,
+                timeout=settings.WORKER_JOB_TIMEOUT_SECONDS,
+                max_tries=settings.WORKER_MAX_TRIES,
+            ),
+            func(
+                process_gateway_notification,
+                name="workers:tasks.process_gateway_notification",
                 keep_result=settings.WORKER_KEEP_RESULT_SECONDS,
                 timeout=settings.WORKER_JOB_TIMEOUT_SECONDS,
                 max_tries=settings.WORKER_MAX_TRIES,
