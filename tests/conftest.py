@@ -95,6 +95,7 @@ def fake_internal_clients(monkeypatch):
                 "customers:create",
                 "subscriptions:create",
                 "subscriptions:cancel",
+                "subscriptions:read",
                 "payments:create",
                 "payments:read",
                 "jobs:read",

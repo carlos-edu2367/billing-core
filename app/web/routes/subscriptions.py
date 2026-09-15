@@ -5,7 +5,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.dtos.response.subscription_status import GetSubscriptionStatusResponse
 from app.infra.db.setup import get_db
+from app.infra.interfaces.gateway_provider import GetGatewayInfra
 from app.infra.repo.subscription_repo import SubscriptionRepositoryINFRA
 from app.infra.config import settings
 from app.infra.jobs import update_job_metadata
@@ -268,3 +270,47 @@ async def cancel_subscription(
     )
     response.headers["X-Job-ID"] = job.job_id
     return {"job_id": job.job_id, "message": "Cancelamento enviado para processamento."}
+
+
+@router.get(
+    "/{subscription_id}",
+    response_model=GetSubscriptionStatusResponse,
+    summary="Consultar status da assinatura",
+    description="""
+Consulta o status atual da assinatura direto no gateway (sem cache local).
+
+Util quando o pagador acabou de voltar do checkout e o consumidor quer saber
+se o cartao ja foi autorizado, sem esperar o webhook da primeira fatura
+(que so chega cerca de 1h depois no Mercado Pago).
+
+### Headers obrigatórios
+- `X-System`
+- `X-API-Key`
+""",
+    responses=build_error_responses(401, 403, 404, 429, 500),
+)
+async def get_subscription_status(
+    subscription_id: UUID,
+    auth: AuthContext = Depends(require_internal_auth("subscriptions:read")),
+    _rate_limiter=Depends(internal_rate_limit()),
+    db: AsyncSession = Depends(get_db),
+):
+    repo = SubscriptionRepositoryINFRA(db)
+    try:
+        subscription = await repo.get_by_id(subscription_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assinatura nao encontrada.") from exc
+
+    if not subscription.belongs_to_system(auth.system):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Assinatura nao encontrada.")
+
+    gateway = GetGatewayInfra().get(gateway=subscription.gateway_provider)
+    remote = await gateway.verify_status(subscription.gateway_subscription_id)
+
+    return GetSubscriptionStatusResponse(
+        subscription_id=subscription.id,
+        gateway_status=remote.status,
+        next_due_date=remote.next_due_date,
+        value=remote.value,
+        cycle=remote.cycle,
+    )
