@@ -18,3 +18,4 @@ class CreateSubscriptionDTO(BaseModel):
     system_sub_id: str
     expires_at: datetime
     webhook_link: str
+    back_url: str | None = None

@@ -84,6 +84,16 @@ class CreateSubscriptionRequest(BaseModel):
         ),
         examples=["https://hooks.neectify.local/billing/subscription"],
     )
+    back_url: str | None = Field(
+        default=None,
+        max_length=2048,
+        description=(
+            "URL de retorno apos a autorizacao no Mercado Pago. Quando ausente, usa "
+            "MERCADOPAGO_SUBSCRIPTION_BACK_URL. Ignorado pelo Asaas. Precisa usar HTTPS e "
+            "host permitido em ALLOWED_CHECKOUT_REDIRECT_HOSTS."
+        ),
+        examples=["https://app.neectify.local/billing/retorno?ref=sub-001"],
+    )
 
     @field_validator("customer_provider_id", "description", "system_sub_id")
     @classmethod
@@ -129,6 +139,22 @@ class CreateSubscriptionRequest(BaseModel):
         if normalized <= datetime.now(timezone.utc):
             raise ValueError("expires_at deve estar no futuro.")
         return normalized
+
+    @field_validator("back_url")
+    @classmethod
+    def validate_back_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        parsed = urlparse(value)
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise ValueError("back_url deve usar HTTPS.")
+
+        allowed_hosts = settings.effective_checkout_redirect_hosts
+        hostname = parsed.hostname.lower()
+        if not any(hostname == allowed or hostname.endswith(f".{allowed}") for allowed in allowed_hosts):
+            raise ValueError("Host do back_url nao permitido.")
+
+        return value
 
     def to_worker_payload(self) -> dict:
         return self.model_dump(mode="json", exclude={"customer_provider_id"})
