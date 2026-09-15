@@ -81,6 +81,14 @@ class InterfaceGateway(ABC):
     def normalize_webhook(self, payload: dict) -> WebhookPayload:
         pass
 
+    async def resolve_webhook(self, payload: dict) -> WebhookPayload | None:
+        """Converte a notificacao bruta no payload normalizado; None quando nao ha acao.
+
+        Gateways que enviam o estado completo so normalizam. Gateways que enviam apenas
+        o id do recurso sobrescrevem este metodo para buscar o estado na API.
+        """
+        return self.normalize_webhook(payload)
+
     @abstractmethod
     async def create_subscription(
         self,

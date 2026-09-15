@@ -20,11 +20,14 @@ from app.infra.interfaces.mercadopago_mappers import (
     CYCLE_BY_FREQUENCY_MONTHS,
     FREQUENCY_MONTHS_BY_CYCLE,
     MIN_PIX_EXPIRATION_MINUTES,
+    authorized_payment_to_webhook,
     billing_type_from_payment,
     excluded_payment_types,
     net_value,
     parse_datetime,
+    payment_notification_to_webhook,
     payment_status_to_gateway,
+    preapproval_notification_to_webhook,
     preapproval_status_to_gateway,
     resolve_checkout_status,
 )
@@ -269,7 +272,27 @@ class MercadoPagoProvider(InterfaceGateway):
             cycle=CYCLE_BY_FREQUENCY_MONTHS.get(int(recurring.get("frequency") or 1), "MONTHLY"),
         )
 
-    # ------------------------------------------------------------------ webhook (Task 8)
+    # ------------------------------------------------------------------ webhook
 
     def normalize_webhook(self, payload: dict) -> WebhookPayload:
-        raise NotImplementedError
+        raise DomainError("Notificacoes do Mercado Pago trazem so o id do recurso; use resolve_webhook.")
+
+    async def resolve_webhook(self, payload: dict) -> WebhookPayload | None:
+        topic = payload.get("type") or payload.get("topic")
+        resource_id = str((payload.get("data") or {}).get("id") or "")
+        if not resource_id:
+            raise ValueError("Notificacao do Mercado Pago sem data.id.")
+
+        if topic == "payment":
+            return payment_notification_to_webhook(await self.api.get(f"/v1/payments/{resource_id}"))
+
+        if topic == "subscription_authorized_payment":
+            invoice = await self.api.get(f"/authorized_payments/{resource_id}")
+            payment_id = (invoice.get("payment") or {}).get("id")
+            payment = await self.api.get(f"/v1/payments/{payment_id}") if payment_id else None
+            return authorized_payment_to_webhook(invoice, payment)
+
+        if topic == "subscription_preapproval":
+            return preapproval_notification_to_webhook(await self.api.get(f"/preapproval/{resource_id}"))
+
+        return None
