@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.dtos.request.customer import CreateCustomerDTO
 from app.application.use_cases.create_customer import CreateCustomer
-from app.domain.enums.gateway_provider import GatewayProvider
+from app.infra.config import settings
 from app.infra.db.setup import get_db
 from app.infra.interfaces.gateway_provider import GetGatewayInfra
 from app.infra.interfaces.uow_provider import UowProvider
@@ -32,8 +32,8 @@ async def get_create_customer_use_case(
     response_model=CreateCustomerResponse,
     summary="Criar cliente",
     description=(
-        "Registra um novo cliente no provedor de pagamento (Asaas). "
-        "Idempotente por CPF/CNPJ: se o cliente já existir no Asaas, retorna o mesmo provider_customer_id."
+        "Registra um novo cliente no gateway de pagamento padrao. "
+        "Idempotente por sistema: se o cliente ja tiver vinculo no gateway, retorna o mesmo provider_customer_id."
     ),
     responses=build_error_responses(400, 401, 403, 422, 429, 500),
 )
@@ -57,5 +57,5 @@ async def create_customer(
         system_customer_id=payload.system_customer_id,
     )
 
-    provider_customer_id = await use_case.execute(dto, auth.system, GatewayProvider.ASAAS)
+    provider_customer_id = await use_case.execute(dto, auth.system, settings.DEFAULT_GATEWAY_PROVIDER)
     return CreateCustomerResponse(provider_customer_id=provider_customer_id)

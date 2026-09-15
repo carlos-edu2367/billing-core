@@ -405,3 +405,32 @@ async def test_create_checkout_retries_after_asaas_client_error_is_corrected():
     assert successful_gateway.create_checkout_called == 1
     assert response.checkout_url == "https://sandbox.asaas.com/checkoutSession/show/checkout_123"
     assert operation_repo.saved[-1].status == GatewayOperationStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_create_checkout_renewal_moves_payment_to_requested_gateway():
+    existing = Payment.create_standalone_payment(
+        description="Pedido 123",
+        gateway=GatewayProvider.ASAAS,
+        system_payment_id="order-123",
+        provider_payment_id="checkout_expired",
+        value=Decimal("72.00"),
+        from_system=System.MARKETFY,
+        checkout_link="https://sandbox.asaas.com/checkoutSession/show/checkout_expired",
+        webhook_link="https://hooks.neectify.local/billing/payment",
+        due_date=None,
+        external_reference="checkout:marketfy:order-123",
+    )
+    existing.id = uuid4()
+    existing.payment_status = PaymentStatus.EXPIRED
+    service = CreateCheckout(
+        get_gateway=FakeGetGateway(FakeCheckoutGateway()),
+        uow=FakeUow(),
+        payment_repo=FakePaymentRepo(existing=existing),
+        gateway_operation_repo=FakeGatewayOperationRepo(),
+    )
+
+    await service.execute(make_request(), GatewayProvider.MERCADOPAGO)
+
+    assert existing.gateway == GatewayProvider.MERCADOPAGO
+    assert existing.payment_status == PaymentStatus.PENDING

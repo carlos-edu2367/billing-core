@@ -126,6 +126,8 @@ class CreateCheckout:
                     checkout_link=checkout_info.checkout_url,
                     external_reference=external_reference,
                 )
+                # O checkout novo nasce no gateway padrao atual; o pagamento acompanha.
+                payment.gateway = gateway_provider
             else:
                 payment = Payment.create_standalone_payment(
                     description=request.description,

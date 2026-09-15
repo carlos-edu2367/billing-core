@@ -155,3 +155,32 @@ def test_create_customer_accepts_cnpj_instead_of_cpf(customer_client):
 
     assert response.status_code == 201
     assert "provider_customer_id" in response.json()
+
+
+class _RecordingCreateCustomer:
+    def __init__(self):
+        self.gateway_provider = None
+
+    async def execute(self, dto, system, gateway_provider):
+        self.gateway_provider = gateway_provider
+        return "cus_mp_1"
+
+
+def test_create_customer_uses_default_gateway(fake_redis, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.domain.enums.gateway_provider import GatewayProvider
+    from app.infra.config import settings
+
+    monkeypatch.setattr(settings, "DEFAULT_GATEWAY_PROVIDER", GatewayProvider.MERCADOPAGO)
+    recording = _RecordingCreateCustomer()
+    app.dependency_overrides[get_create_customer_use_case] = lambda: recording
+    try:
+        with TestClient(app) as test_client:
+            app.state.redis_pool = fake_redis
+            response = test_client.post("/v1/customers", json=_valid_payload(), headers=_auth_headers())
+    finally:
+        app.dependency_overrides.pop(get_create_customer_use_case, None)
+
+    assert response.status_code == 201
+    assert recording.gateway_provider == GatewayProvider.MERCADOPAGO

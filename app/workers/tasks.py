@@ -404,7 +404,7 @@ async def create_checkout_worker(ctx, dto_dict: dict):
                 payment_repo=payment_repo,
                 gateway_operation_repo=gateway_operation_repo,
             )
-            result = await service.execute(dto, GatewayProvider.ASAAS)
+            result = await service.execute(dto, settings.DEFAULT_GATEWAY_PROVIDER)
 
         await update_job_metadata(
             ctx["redis"],
