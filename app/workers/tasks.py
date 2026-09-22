@@ -28,6 +28,7 @@ from app.infra.jobs import register_dead_letter, update_job_metadata
 from app.infra.interfaces.gateway_provider import GetGatewayInfra
 from app.infra.interfaces.internal_webhook import InternalWebhookProvider
 from app.infra.interfaces.uow_provider import UowProvider
+from app.infra.repo.customer_repo import CustomerRepositoryINFRA
 from app.infra.repo.gateway_operation_repo import GatewayOperationRepositoryINFRA
 from app.infra.repo.internal_webhook_delivery_repo import InternalWebhookDeliveryRepositoryINFRA
 from app.infra.repo.payment_repo import PaymentRepositoryINFRA
