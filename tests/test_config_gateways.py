@@ -54,3 +54,17 @@ def test_production_rejects_mercadopago_test_token():
 
 def test_production_accepts_mercadopago_live_token():
     make_settings(**(PRODUCTION | {"MERCADOPAGO_ACCESS_TOKEN": "APP_USR-123"})).validate_runtime()
+
+
+def test_worker_startup_validates_runtime_configuration():
+    """Regressao: validate_runtime() so era chamado por app/web/main.py, entao o
+    worker subia com MERCADOPAGO_ACCESS_TOKEN vazio e so quebrava na hora de
+    cobrar um cliente real ("Illegal header value b'Bearer '")."""
+    import inspect
+
+    from app.workers import worker
+
+    source = inspect.getsource(worker)
+    assert "validate_runtime()" in source, (
+        "o worker precisa validar a configuracao no boot, como a API faz"
+    )

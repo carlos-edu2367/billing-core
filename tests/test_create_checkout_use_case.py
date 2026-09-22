@@ -49,6 +49,15 @@ class TimeoutAfterCheckoutRequestGateway(FakeCheckoutGateway):
         raise httpx.ReadTimeout("checkout response lost after request dispatch")
 
 
+class UnsentRequestCheckoutGateway(FakeCheckoutGateway):
+    """Credencial vazia: o httpx recusa montar o header e nada e enviado."""
+
+    async def create_checkout(self, **kwargs):
+        self.create_checkout_called += 1
+        self.last_kwargs = kwargs
+        raise httpx.LocalProtocolError("Illegal header value b'Bearer '")
+
+
 class ClientErrorCheckoutGateway(FakeCheckoutGateway):
     async def create_checkout(self, **kwargs):
         self.create_checkout_called += 1
@@ -434,3 +443,32 @@ async def test_create_checkout_renewal_moves_payment_to_requested_gateway():
 
     assert existing.gateway == GatewayProvider.MERCADOPAGO
     assert existing.payment_status == PaymentStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_create_checkout_treats_unsent_request_as_a_definite_failure():
+    """Regressao: token vazio gera httpx.LocalProtocolError, subclasse de
+    RequestError, e caia no balde 'incerto'. Mas a requisicao nunca chega a ser
+    montada: nao ha nada no gateway para reconciliar, e a operacao deve poder
+    ser repetida assim que a credencial for corrigida."""
+    gateway = UnsentRequestCheckoutGateway()
+    operation_repo = FakeGatewayOperationRepo()
+    service = CreateCheckout(
+        get_gateway=FakeGetGateway(gateway),
+        uow=FakeUow(),
+        payment_repo=FakePaymentRepo(),
+        gateway_operation_repo=operation_repo,
+    )
+
+    with pytest.raises(httpx.LocalProtocolError):
+        await service.execute(make_request(), GatewayProvider.ASAAS)
+
+    operation = operation_repo.saved[-1]
+    assert operation.status == GatewayOperationStatus.FAILED
+    assert operation.status != GatewayOperationStatus.REQUIRES_RECONCILIATION
+
+    # Credencial corrigida: a proxima tentativa alcanca o gateway de verdade.
+    fixed_gateway = FakeCheckoutGateway()
+    service.get_gateway = FakeGetGateway(fixed_gateway)
+    await service.execute(make_request(), GatewayProvider.ASAAS)
+    assert fixed_gateway.create_checkout_called == 1

@@ -20,7 +20,15 @@ from app.domain.errors import DomainError
 logger = logging.getLogger(__name__)
 
 
+# Erros levantados ao montar a requisicao, antes de qualquer byte sair: nao ha
+# nada no gateway para reconciliar. Credencial vazia cai aqui
+# (LocalProtocolError: "Illegal header value b'Bearer '").
+_UNSENT_REQUEST_ERRORS = (httpx.LocalProtocolError, httpx.UnsupportedProtocol)
+
+
 def _has_uncertain_gateway_outcome(exc: Exception) -> bool:
+    if isinstance(exc, _UNSENT_REQUEST_ERRORS):
+        return False
     status_code = getattr(exc, "status_code", None)
     return isinstance(exc, (httpx.RequestError, TimeoutError)) or (
         isinstance(status_code, int) and status_code >= 500

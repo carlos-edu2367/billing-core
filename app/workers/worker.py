@@ -19,6 +19,9 @@ from .tasks import (
 
 
 configure_logging(settings.LOG_LEVEL)
+# Mesma validacao que a API faz no boot: sem isso o worker sobe com credencial
+# de gateway vazia e so falha na hora de cobrar um cliente real.
+settings.validate_runtime()
 logger = logging.getLogger(__name__)
 
 
